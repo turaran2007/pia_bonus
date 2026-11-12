@@ -17,7 +17,13 @@ Discord 用のピアボーナス Bot です。
 | `/pia_settings` | 現在の設定と次回の投稿日時 |
 | `/pia_help` | ヘルプ |
 
+Bot のメッセージはすべて Discord の新しい表示方式（Components V2）のカードで表示します。
+古い Discord クライアントでは正しく表示されないことがあるので、アプリを最新にしてください。
+
 ### 設定できること（`/pia_config`）
+
+設定パネルの各項目の［変更］から入力画面を開いて設定します。保存すると、パネルがその場で更新されます。
+
 
 | 項目 | 内容 | 既定値 |
 |---|---|---|
@@ -41,8 +47,9 @@ Discord 用のピアボーナス Bot です。
 index.js            Bot 本体（イベント処理、定期投稿、ヘルスチェック）
 src/db.js           PostgreSQL へのアクセス
 src/time.js         日付・時刻の処理（日本時間）
-src/format.js       メッセージの分割、ランキングの整形
+src/format.js       ランキングの並べ替え
 src/awards.js       記録する相手の決定、除外チャンネルの判定
+src/views.js        画面（Components V2 のカードと入力画面）の組み立て
 scripts/            旧データの移行、旧コマンドの削除
 k8s/                k3s 用のマニフェスト
 test/               テスト（node --test）
