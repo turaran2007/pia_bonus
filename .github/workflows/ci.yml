@@ -66,3 +66,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  deploy:
+    # main の更新だけ、自鯖(k3s)に即反映する
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: image
+    runs-on: [self-hosted, pia-bonus]
+    steps:
+      - uses: azure/setup-kubectl@v4
+      - name: Restart deployment
+        run: kubectl -n pia-bonus rollout restart deployment/pia-bonus
