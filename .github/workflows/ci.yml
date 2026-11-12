@@ -64,6 +64,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Bot のプレイ中の表示などに出すコミット ID
+          build-args: |
+            APP_VERSION=${{ github.sha }}
 
   deploy:
     # main の更新だけ、自鯖(k3s)に即反映する

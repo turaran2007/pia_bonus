@@ -15,6 +15,8 @@ import cron from 'node-cron';
 import { collectReceivers, isExcludedChannel } from './src/awards.js';
 import { applicationOwnerIds, canManage, parseUserIds } from './src/permissions.js';
 import { describeDiscordError, diagnose } from './src/diagnostics.js';
+import { containsEmoji } from './src/emoji.js';
+import { VERSION } from './src/version.js';
 import { DEFAULT_SETTINGS, createDb } from './src/db.js';
 import { rankingLines } from './src/format.js';
 import {
@@ -149,7 +151,7 @@ const commands = [
 
 function updatePresence() {
   client.user?.setPresence({
-    activities: [{ name: `${client.guilds.cache.size}つのサーバーで導入中`, type: ActivityType.Playing }],
+    activities: [{ name: `${client.guilds.cache.size}つのサーバーで導入中 | ${VERSION}`, type: ActivityType.Playing }],
     status: 'online'
   });
 }
@@ -165,7 +167,7 @@ async function fetchMembers(guild) {
 }
 
 client.once(Events.ClientReady, async readyClient => {
-  console.log(`✅ ${readyClient.user.tag} としてログインしました`);
+  console.log(`✅ ${readyClient.user.tag} としてログインしました（${VERSION}）`);
   updatePresence();
 
   try {
@@ -222,7 +224,8 @@ client.on(Events.MessageCreate, async message => {
   try {
     const settings = await getSettings(message.guildId);
     const emoji = settings.emoji;
-    if (!emoji || !message.content.includes(emoji)) return;
+    // 絵文字は名前で判定する（設定が :coin: でも 🪙 でも、メッセージ側がどちらでも一致する）
+    if (!emoji || !containsEmoji(message.content, emoji)) return;
 
     const where = `[${message.guild.name}] #${message.channel.name ?? message.channelId}`;
     if (isExcludedChannel(message.channel, settings.excludedChannelIds)) {
@@ -490,7 +493,7 @@ async function handleCommand(interaction) {
     }
 
     case 'pia_help':
-      return interaction.reply({ components: helpView(), flags: EPHEMERAL_V2 });
+      return interaction.reply({ components: helpView(VERSION), flags: EPHEMERAL_V2 });
 
     case 'pia_check': {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
