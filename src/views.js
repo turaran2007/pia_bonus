@@ -434,6 +434,27 @@ function withRanks(list, key) {
 }
 
 // ------------------------
+// /pia_check
+// ------------------------
+
+const CHECK_MARKS = { ok: '✅', warning: '⚠️', error: '❌' };
+
+/** @param {Array<{level: 'ok'|'warning'|'error', text: string}>} results */
+export function checkView(results) {
+  const errors = results.filter(r => r.level === 'error').length;
+  const summary = errors > 0
+    ? `${errors} 件の問題があります。下の ❌ を直してください。`
+    : 'このチャンネルでは問題なく記録できます。';
+  return [
+    container(errors > 0 ? COLORS.danger : COLORS.success)
+      .addTextDisplayComponents(text(`## 動作チェック\n${summary}`))
+      .addSeparatorComponents(separator())
+      .addTextDisplayComponents(text(results.map(r => `${CHECK_MARKS[r.level]} ${r.text}`).join('\n')))
+      .addTextDisplayComponents(text('-# 権限は「サーバー設定 → ロール」や、チャンネル・カテゴリーの「権限」で Bot のロールに付けられます'))
+  ];
+}
+
+// ------------------------
 // /pia_help
 // ------------------------
 
@@ -455,6 +476,7 @@ export function helpView() {
         '`/pia_yearly`　年間ランキング（今年・去年）\n' +
         '`/pia_me`　自分の記録\n' +
         '`/pia_settings`　現在の設定\n' +
+        '`/pia_check`　このチャンネルで記録できるかの確認\n' +
         '`/pia_config`　設定の変更（管理者のみ）'
       ))
       .addTextDisplayComponents(text(
