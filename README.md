@@ -86,7 +86,7 @@ TEST_DATABASE_URL=postgres://postgres@localhost:5432/pia_test npm test
 
 ### 1. コンテナイメージ
 
-`main` に push すると GitHub Actions がテストを実行し、`ghcr.io/turaran2007/pia_bonus:latest`（amd64 / arm64）を作ります。
+`main` に push すると GitHub Actions がテストを実行し、`ghcr.io/turaran2007/pia_bonus:latest`（amd64）を作り、自前のランナーで k3s の Bot を再起動して反映します。
 
 リポジトリが非公開の場合、イメージも非公開になります。次のどちらかを行ってください。
 
