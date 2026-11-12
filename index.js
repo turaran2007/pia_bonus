@@ -13,6 +13,7 @@ import {
 import dotenv from 'dotenv';
 import cron from 'node-cron';
 import { collectReceivers, isExcludedChannel } from './src/awards.js';
+import { applicationOwnerIds, canManage, parseUserIds } from './src/permissions.js';
 import { DEFAULT_SETTINGS, createDb } from './src/db.js';
 import { rankingLines } from './src/format.js';
 import {
@@ -60,6 +61,10 @@ if (!BOT_TOKEN) {
   console.error('❌ 環境変数 BOT_TOKEN が設定されていません');
   process.exit(1);
 }
+
+// Bot の管理者：どのサーバーでも設定の変更とリセットができる。
+// アプリケーションの所有者は起動時に自動で追加し、BOT_ADMIN_IDS で別のアカウントも追加できる
+const botAdminIds = new Set(parseUserIds(process.env.BOT_ADMIN_IDS));
 
 // DATABASE_URL が無ければ PGHOST / PGUSER / PGPASSWORD / PGDATABASE を使う（pg の標準動作）
 const db = createDb(process.env.DATABASE_URL);
@@ -114,8 +119,8 @@ async function resetSettings(guildId) {
 const commands = [
   new SlashCommandBuilder()
     .setName('pia_config')
-    .setDescription('Pia Botの設定メニューを表示します')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // Bot の管理者がサーバーの管理者でなくても使えるよう、表示は制限しない（実行時に確認する）
+    .setDescription('Pia Botの設定メニューを表示します（管理者のみ）'),
   new SlashCommandBuilder().setName('pia_total').setDescription('累計の送受信数ランキングを表示します'),
   new SlashCommandBuilder().setName('pia_weekly').setDescription('直近7日間の送受信数ランキングを表示します'),
   new SlashCommandBuilder()
@@ -157,6 +162,14 @@ async function fetchMembers(guild) {
 client.once(Events.ClientReady, async readyClient => {
   console.log(`✅ ${readyClient.user.tag} としてログインしました`);
   updatePresence();
+
+  try {
+    const owners = applicationOwnerIds(await readyClient.application.fetch());
+    owners.forEach(id => botAdminIds.add(id));
+    console.log(`✅ Bot の管理者: ${[...botAdminIds].join(', ') || '（なし）'}`);
+  } catch (err) {
+    console.error('❌ アプリケーションの所有者の取得に失敗:', err);
+  }
 
   try {
     await readyClient.application.commands.set(commands);
@@ -306,7 +319,11 @@ const MODALS = {
 };
 
 function isAdmin(interaction) {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+  const allowed = canManage({ userId: interaction.user.id, memberPermissions: interaction.memberPermissions }, botAdminIds);
+  if (allowed && !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    console.log(`ℹ️ Bot の管理者 ${interaction.user.tag} がサーバー「${interaction.guild?.name ?? interaction.guildId}」の設定を操作しました`);
+  }
+  return allowed;
 }
 
 /** 設定パネルを表示し直す（status で上部にお知らせを出す） */

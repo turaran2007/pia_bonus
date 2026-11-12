@@ -8,7 +8,7 @@ Discord 用のピアボーナス Bot です。
 
 | コマンド | 内容 |
 |---|---|
-| `/pia_config` | 設定メニュー（管理者のみ）。下の「設定できること」を参照 |
+| `/pia_config` | 設定メニュー（サーバーの管理者と Bot の管理者のみ）。下の「設定できること」を参照 |
 | `/pia_total` | 累計ランキング |
 | `/pia_weekly` | 直近7日間（今日を含む）のランキング |
 | `/pia_monthly` | 月間ランキング（今月／先月） |
@@ -35,6 +35,7 @@ Bot のメッセージはすべて Discord の新しい表示方式（Components
 | 記録リセット | 累計データ、または今週のデータを削除 | |
 | 設定リセット | 上記の設定をすべて既定値に戻す | |
 
+- Bot の管理者（アプリケーションの所有者と `BOT_ADMIN_IDS` のアカウント）は、そのサーバーの管理者でなくても `/pia_config` を使えます。Discord 上の権限やロールは変わりません。
 - 記録には Bot と送った本人は含みません。
 - 定期投稿は、設定した曜日・時刻に「前日までの7日間」を集計します。送信日当日の記録は次回に入るので、取りこぼしも重複もありません。
 - 設定時刻に Bot が止まっていても、**同じ日のうちに再開すれば**その時点で投稿します（同じ日に二重に投稿することはありません）。曜日・時刻を「今日の、もう過ぎた時刻」に変えた場合は、その日は投稿せず次回からになります。
@@ -61,6 +62,7 @@ test/               テスト（node --test）
 |---|---|
 | `BOT_TOKEN` | Discord の Bot トークン（必須） |
 | `DATABASE_URL` または `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | PostgreSQL の接続先 |
+| `BOT_ADMIN_IDS` | 全サーバーで設定の変更とリセットができるアカウント（Discord のユーザー ID、カンマ区切り）。Bot のアプリケーションの所有者は指定しなくても自動で含まれる。k3s では Secret に入れる（リポジトリには書かない） |
 | `HEALTH_PORT` | ヘルスチェックのポート（省略時 8080）。`/healthz` は Discord 接続、`/readyz` は Discord と DB の両方を確認 |
 
 Discord Developer Portal の Bot 設定で **SERVER MEMBERS INTENT** と **MESSAGE CONTENT INTENT** を有効にしてください。
@@ -111,7 +113,7 @@ docker save pia_bonus:local | sudo k3s ctr images import -
 cp k8s/secret.example.yaml k8s/secret.yaml
 ```
 
-`k8s/secret.yaml` に Bot トークンと PostgreSQL のパスワードを書きます（このファイルはコミットされません）。
+`k8s/secret.yaml` に Bot トークンと PostgreSQL のパスワード、必要なら `BOT_ADMIN_IDS` を書きます（このファイルはコミットされません）。
 
 ```bash
 kubectl apply -f k8s/namespace.yaml

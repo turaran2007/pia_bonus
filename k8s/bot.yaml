@@ -34,6 +34,14 @@ spec:
                 secretKeyRef:
                   name: pia-bonus
                   key: BOT_TOKEN
+            # 全サーバーで設定を変更できるアカウント（アプリケーションの所有者以外）。
+            # リポジトリに ID を載せないよう、Secret から読む（未設定でも起動する）
+            - name: BOT_ADMIN_IDS
+              valueFrom:
+                secretKeyRef:
+                  name: pia-bonus
+                  key: BOT_ADMIN_IDS
+                  optional: true
             - name: PGHOST
               value: postgres
             - name: PGPORT
