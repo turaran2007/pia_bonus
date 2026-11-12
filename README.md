@@ -62,7 +62,7 @@ test/               テスト（node --test）
 |---|---|
 | `BOT_TOKEN` | Discord の Bot トークン（必須） |
 | `DATABASE_URL` または `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | PostgreSQL の接続先 |
-| `BOT_ADMIN_IDS` | 全サーバーで設定の変更とリセットができるアカウント（Discord のユーザー ID、カンマ区切り）。Bot のアプリケーションの所有者は指定しなくても自動で含まれる |
+| `BOT_ADMIN_IDS` | 全サーバーで設定の変更とリセットができるアカウント（Discord のユーザー ID、カンマ区切り）。Bot のアプリケーションの所有者は指定しなくても自動で含まれる。k3s では Secret に入れる（リポジトリには書かない） |
 | `HEALTH_PORT` | ヘルスチェックのポート（省略時 8080）。`/healthz` は Discord 接続、`/readyz` は Discord と DB の両方を確認 |
 
 Discord Developer Portal の Bot 設定で **SERVER MEMBERS INTENT** と **MESSAGE CONTENT INTENT** を有効にしてください。
@@ -113,7 +113,7 @@ docker save pia_bonus:local | sudo k3s ctr images import -
 cp k8s/secret.example.yaml k8s/secret.yaml
 ```
 
-`k8s/secret.yaml` に Bot トークンと PostgreSQL のパスワードを書きます（このファイルはコミットされません）。
+`k8s/secret.yaml` に Bot トークンと PostgreSQL のパスワード、必要なら `BOT_ADMIN_IDS` を書きます（このファイルはコミットされません）。
 
 ```bash
 kubectl apply -f k8s/namespace.yaml

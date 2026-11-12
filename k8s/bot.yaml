@@ -34,10 +34,14 @@ spec:
                 secretKeyRef:
                   name: pia-bonus
                   key: BOT_TOKEN
-            # Bot のアプリケーションの所有者以外にも、全サーバーで設定を変更できるアカウントを
-            # 追加する場合は、Discord のユーザー ID をカンマ区切りで指定する
+            # 全サーバーで設定を変更できるアカウント（アプリケーションの所有者以外）。
+            # リポジトリに ID を載せないよう、Secret から読む（未設定でも起動する）
             - name: BOT_ADMIN_IDS
-              value: ""
+              valueFrom:
+                secretKeyRef:
+                  name: pia-bonus
+                  key: BOT_ADMIN_IDS
+                  optional: true
             - name: PGHOST
               value: postgres
             - name: PGPORT
