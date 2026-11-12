@@ -11,7 +11,8 @@
     "start": "node index.js",
     "test": "node --test",
     "clear-guild-commands": "node scripts/clear-guild-commands.js",
-    "migrate:sqlite": "node scripts/migrate-sqlite-to-postgres.js"
+    "migrate:sqlite": "node scripts/migrate-sqlite-to-postgres.js",
+    "build:emoji": "node scripts/build-emoji-names.js"
   },
   "license": "MIT",
   "dependencies": {
@@ -20,5 +21,8 @@
     "moment-timezone": "^0.6.0",
     "node-cron": "^3.0.2",
     "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "emojibase-data": "^16.0.3"
   }
 }

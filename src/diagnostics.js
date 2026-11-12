@@ -1,5 +1,6 @@
 // /pia_check の診断。Bot がそのチャンネルで記録・返信できるか、週次投稿ができるかを調べる
 import { PermissionFlagsBits as P } from 'discord.js';
+import { parseEmojiSetting } from './emoji.js';
 
 /** 記録するチャンネルで Bot に必要な権限 */
 const RECORD_PERMISSIONS = [
@@ -43,7 +44,8 @@ export function diagnose({ settings, excluded, channelPermissions, isThread, rep
   const error = text => results.push({ level: 'error', text });
 
   // 記録の設定
-  if (settings.emoji) ok(`対象の絵文字は ${settings.emoji} です`);
+  const emoji = parseEmojiSetting(settings.emoji);
+  if (emoji) ok(`対象の絵文字は ${settings.emoji} です（名前 \`${emoji.label}\` で判定します）`);
   else error('対象の絵文字が設定されていません。/pia_config から設定してください');
 
   if (excluded) error('このチャンネルは除外チャンネルに含まれているため、記録されません');

@@ -17,6 +17,7 @@ import {
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
+import { parseEmojiSetting } from './emoji.js';
 import { DAYS, formatPeriod, nextSendTime, normalizeDay } from './time.js';
 
 export const COLORS = Object.freeze({
@@ -122,7 +123,9 @@ function describeSettings(settings, now) {
   return {
     channel: settings.channelId ? `<#${settings.channelId}>` : '未設定',
     schedule,
-    emoji: settings.emoji ? settings.emoji : '未設定\n-# 設定するまで記録されません',
+    emoji: settings.emoji
+      ? `${settings.emoji}\n-# 名前 \`${parseEmojiSetting(settings.emoji)?.label ?? settings.emoji}\` で判定します（同じ名前の絵文字はどれでも記録）`
+      : '未設定\n-# 設定するまで記録されません',
     limit: settings.dailyPairLimit > 0 ? `${settings.dailyPairLimit}回まで` : '無制限',
     mentions,
     excluded
@@ -259,7 +262,7 @@ export function emojiModal(settings) {
     .setCustomId('emoji_modal')
     .setTitle('対象の絵文字')
     .addLabelComponents(
-      label('対象の絵文字', 'この絵文字を入れて相手をメンションすると記録されます（例: 👍 や <:coin:123456>）')
+      label('対象の絵文字', '絵文字そのもの（🪙）か名前（:coin:）を入力。同じ名前の絵文字ならどれでも記録されます')
         .setTextInputComponent(new TextInputBuilder()
           .setCustomId('emoji')
           .setStyle(TextInputStyle.Short)

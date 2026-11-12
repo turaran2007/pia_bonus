@@ -15,6 +15,7 @@ import cron from 'node-cron';
 import { collectReceivers, isExcludedChannel } from './src/awards.js';
 import { applicationOwnerIds, canManage, parseUserIds } from './src/permissions.js';
 import { describeDiscordError, diagnose } from './src/diagnostics.js';
+import { containsEmoji } from './src/emoji.js';
 import { DEFAULT_SETTINGS, createDb } from './src/db.js';
 import { rankingLines } from './src/format.js';
 import {
@@ -222,7 +223,8 @@ client.on(Events.MessageCreate, async message => {
   try {
     const settings = await getSettings(message.guildId);
     const emoji = settings.emoji;
-    if (!emoji || !message.content.includes(emoji)) return;
+    // 絵文字は名前で判定する（設定が :coin: でも 🪙 でも、メッセージ側がどちらでも一致する）
+    if (!emoji || !containsEmoji(message.content, emoji)) return;
 
     const where = `[${message.guild.name}] #${message.channel.name ?? message.channelId}`;
     if (isExcludedChannel(message.channel, settings.excludedChannelIds)) {
