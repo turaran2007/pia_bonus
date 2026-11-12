@@ -1,0 +1,8 @@
+node_modules
+.git
+.github
+.env
+*.db
+*.sqlite
+k8s
+test
