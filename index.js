@@ -53,7 +53,6 @@ dotenv.config();
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? 8080);
-const DEFAULT_EMOJI = '🔸';
 // ランキング投稿でメンションによる通知を飛ばさない
 const NO_PINGS = { parse: [] };
 
@@ -249,21 +248,19 @@ async function resolveNames(guild, userIds) {
   }
   return id => {
     const name = guild.members.cache.get(id)?.displayName;
-    return name ? `**${escapeMarkdown(name)}**` : `<@${id}>`;
+    return name ? escapeMarkdown(name) : `<@${id}>`;
   };
 }
 
 /** ランキングのメッセージ（複数通になることがある）を作る */
 async function buildRankingMessages(guild, rows, { title, subtitle }) {
-  const emoji = (await getSettings(guild.id)).emoji ?? DEFAULT_EMOJI;
   const nameOf = await resolveNames(guild, rows.map(row => row.userId));
-  const line = entry => rankLine(entry, emoji);
   return rankingMessages({
     title,
     subtitle,
     sections: [
-      { heading: '📤 giveAward（送った回数）', lines: rankingLines(rows, 'sent', nameOf, line) },
-      { heading: '📥 receiveAward（もらった回数）', lines: rankingLines(rows, 'received', nameOf, line) }
+      { heading: 'giveAward', lines: rankingLines(rows, 'sent', nameOf, rankLine) },
+      { heading: 'receiveAward', lines: rankingLines(rows, 'received', nameOf, rankLine) }
     ]
   });
 }
@@ -477,7 +474,6 @@ async function handleCommand(interaction) {
     case 'pia_me': {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const userId = interaction.user.id;
-      const emoji = (await getSettings(guildId)).emoji ?? DEFAULT_EMOJI;
       const between = period => db.getUserStatsBetween(guildId, userId, toDateString(period.start), toDateString(period.end));
       const [total, year, month, recent, sentTo, receivedFrom] = await Promise.all([
         db.getUserTotal(guildId, userId),
@@ -493,11 +489,10 @@ async function handleCommand(interaction) {
       return interaction.editReply({
         components: meView({
           name: escapeMarkdown(interaction.member?.displayName ?? interaction.user.username),
-          emoji,
           periods: [
             { label: '累計', ...total },
-            { label: `今年（${now.format('YYYY年')}）`, ...year },
-            { label: `今月（${now.format('M月')}）`, ...month },
+            { label: now.format('YYYY年'), ...year },
+            { label: now.format('M月'), ...month },
             { label: '直近7日間', ...recent }
           ],
           sentTo: named(sentTo),

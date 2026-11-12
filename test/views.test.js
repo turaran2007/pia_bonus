@@ -80,7 +80,7 @@ test('モーダルが Discord の制約を満たす', () => {
 
 test('ランキングは長いと複数のメッセージに分かれる', () => {
   const lines = Array.from({ length: 400 }, (_, i) =>
-    rankLine({ rank: i + 1, name: `**とても長い表示名のメンバー${i}**`, count: 400 - i }, '<:coin:123456789012345678>'));
+    rankLine({ rank: i + 1, name: `とても長い表示名のメンバーとても長い表示名のメンバー${i}`, count: 400 - i }));
   const pages = rankingMessages({
     title: '累計ランキング',
     subtitle: '集計期間: 11月6日～11月12日',
@@ -100,10 +100,21 @@ test('ランキングが短ければ 1 通、空の部門は「まだ記録が�
   assert.ok(JSON.stringify(pages[0][0].toJSON()).includes('まだ記録がありません'));
 });
 
-test('メダル表示', () => {
-  assert.ok(rankLine({ rank: 1, name: 'A', count: 3 }, '👍').startsWith('🥇'));
-  assert.ok(rankLine({ rank: 3, name: 'A', count: 3 }, '👍').startsWith('🥉'));
-  assert.ok(rankLine({ rank: 4, name: 'A', count: 3 }, '👍').startsWith('` 4.`'));
+test('順位の行は絵文字を使わない', () => {
+  assert.equal(rankLine({ rank: 1, name: 'つらら', count: 3 }), '1位　つらら さん　3回');
+  assert.equal(rankLine({ rank: 12, name: '<@1>', count: 1 }), '12位　<@1> さん　1回');
+});
+
+test('/pia_me は同じ回数の相手を同じ順位にする', () => {
+  const json = JSON.stringify(meView({
+    name: 'A',
+    periods: [{ label: '累計', sent: 3, received: 0 }],
+    sentTo: [{ name: 'B', count: 2 }, { name: 'C', count: 2 }, { name: 'D', count: 1 }],
+    receivedFrom: []
+  }).map(c => c.toJSON()));
+  assert.ok(json.includes('1位　B さん　2回\\n1位　C さん　2回\\n3位　D さん　1回'));
+  assert.ok(json.includes('**累計**　送った 3回、もらった 0回'));
+  assert.ok(json.includes('まだいません'));
 });
 
 test('その他の画面', () => {
@@ -112,10 +123,25 @@ test('その他の画面', () => {
   assertWithinLimits(weeklyIntroView({ start: now.clone().subtract(7, 'days'), end: now.clone().subtract(1, 'day') }));
   assertWithinLimits(recordReplyView({ senderId: '1', accepted: 2, limited: 1, limit: 3 }));
   assertWithinLimits(meView({
-    name: 'A', emoji: '👍',
+    name: 'A',
     periods: [{ label: '累計', sent: 1, received: 2 }],
     sentTo: [{ name: 'B', count: 3 }], receivedFrom: []
   }));
   const text = JSON.stringify(recordReplyView({ senderId: '1', accepted: 0, limited: 2, limit: 3 }).map(c => c.toJSON()));
   assert.ok(text.includes('記録しませんでした'));
+});
+
+test('見出しや行頭に飾りの絵文字を使わない', () => {
+  const views = [
+    helpView(), resetView('choose'), weeklyIntroView({ start: now.clone().subtract(7, 'days'), end: now }),
+    settingsView(fullSettings, now, { editable: true }), settingsView(fullSettings, now),
+    rankingMessages({ title: '累計ランキング', sections: [{ heading: 'giveAward', lines: ['1位　A さん　1回'] }] })[0],
+    meView({ name: 'A', periods: [{ label: '累計', sent: 0, received: 0 }], sentTo: [], receivedFrom: [] }),
+    recordReplyView({ senderId: '1', accepted: 1, limited: 0, limit: 0 })
+  ];
+  const decorative = /[🥇🥈🥉🏆📊📤📥📣🎁📘⚙📝🗑⏸]/u;
+  for (const view of views) {
+    const json = JSON.stringify(view.map(c => c.toJSON()));
+    assert.ok(!decorative.test(json), json.slice(0, 200));
+  }
 });

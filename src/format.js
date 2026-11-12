@@ -8,8 +8,11 @@
  * @param {(entry: {rank: number, name: string, count: number}) => string} formatLine
  */
 export function rankingLines(rows, key, nameOf, formatLine) {
-  return rows
-    .filter(row => row[key] > 0)
-    .sort((a, b) => b[key] - a[key])
-    .map((row, index) => formatLine({ rank: index + 1, name: nameOf(row.userId), count: row[key] }));
+  const sorted = rows.filter(row => row[key] > 0).sort((a, b) => b[key] - a[key]);
+  // 同じ回数は同じ順位にする（1位、1位、3位…）
+  return sorted.map(row => formatLine({
+    rank: sorted.findIndex(other => other[key] === row[key]) + 1,
+    name: nameOf(row.userId),
+    count: row[key]
+  }));
 }

@@ -32,7 +32,6 @@ export const MESSAGE_TEXT_BUDGET = 3800;
 export const MAX_DAILY_PAIR_LIMIT = 100;
 
 const WEEK_ORDER = ['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日'];
-const MEDALS = ['🥇', '🥈', '🥉'];
 
 // ------------------------
 // 部品
@@ -71,13 +70,13 @@ const NOTICE_STYLE = {
   success: { color: COLORS.success, icon: '✅' },
   error: { color: COLORS.danger, icon: '❌' },
   warning: { color: COLORS.warning, icon: '⚠️' },
-  info: { color: COLORS.info, icon: 'ℹ️' }
+  info: { color: COLORS.info, icon: '' }
 };
 
 /** 1 枚のカードだけのメッセージ */
 export function noticeView(message, kind = 'info') {
   const { color, icon } = NOTICE_STYLE[kind];
-  return [container(color).addTextDisplayComponents(text(`${icon} ${message}`))];
+  return [container(color).addTextDisplayComponents(text(icon ? `${icon} ${message}` : message))];
 }
 
 // ------------------------
@@ -87,12 +86,12 @@ export function noticeView(message, kind = 'info') {
 export function recordReplyView({ senderId, accepted, limited, limit }) {
   let content;
   if (accepted === 0) {
-    content = `⏸️ <@${senderId}>さん、今日はもう同じ相手への上限（${limit}回）に達しているため、記録しませんでした。`;
+    content = `<@${senderId}>さん、今日はもう同じ相手への上限（${limit}回）に達しているため、記録しませんでした。`;
   } else {
     content = accepted === 1
-      ? `🎁 <@${senderId}>さん、記録しました！`
-      : `🎁 <@${senderId}>さん、${accepted}人分を記録しました！`;
-    if (limited > 0) content += `\n-# ${limited}人は今日の上限（${limit}回）に達しているため対象外です`;
+      ? `<@${senderId}>さん、記録しました！`
+      : `<@${senderId}>さん、${accepted}人分を記録しました！`;
+    if (limited > 0) content += `\n-# ${limited}人は今日の上限（${limit}回）に達しているため記録していません`;
   }
   return [text(content)];
 }
@@ -141,18 +140,21 @@ export function settingsView(settings, now, { editable = false, status } = {}) {
   const edit = id => (editable ? button(id, '変更') : null);
   const color = status?.kind === 'error' ? COLORS.danger : COLORS.brand;
 
-  let header = editable ? '## ⚙️ Pia Bot の設定' : '## 📝 Pia Bot の現在の設定';
-  if (status) header += `\n${NOTICE_STYLE[status.kind].icon} ${status.message}`;
+  let header = editable ? '## Pia Bot の設定' : '## 現在の設定';
+  if (status) {
+    const { icon } = NOTICE_STYLE[status.kind];
+    header += `\n${icon ? `${icon} ` : ''}${status.message}`;
+  }
 
   const card = container(color).addTextDisplayComponents(text(header));
 
   card.addSeparatorComponents(separator());
-  card.addTextDisplayComponents(text('### 📣 週次の集計投稿'));
+  card.addTextDisplayComponents(text('### 週次の集計投稿'));
   addRow(card, `**投稿先チャンネル**\n${d.channel}`, edit('set_channel'));
   addRow(card, `**投稿日時**\n${d.schedule}`, edit('set_schedule'));
 
   card.addSeparatorComponents(separator());
-  card.addTextDisplayComponents(text('### 🎁 記録のルール'));
+  card.addTextDisplayComponents(text('### 記録のルール'));
   addRow(card, `**対象の絵文字**\n${d.emoji}`, edit('set_emoji'));
   addRow(card, `**同じ相手への1日の上限**\n${d.limit}`, edit('set_limit'));
   addRow(card, `**記録するメンション**\n${d.mentions}`, edit('set_mentions'));
@@ -174,7 +176,7 @@ export function settingsView(settings, now, { editable = false, status } = {}) {
 export function resetView(step) {
   const views = {
     choose: {
-      body: '## 🗑️ 記録のリセット\nどのデータをリセットしますか？\n' +
+      body: '## 記録のリセット\nどのデータをリセットしますか？\n' +
         '- **累計データ**：/pia_total と /pia_me の累計・よくやり取りする相手が 0 になります\n' +
         '- **今週のデータ**：直近8日間の記録を消します（週次投稿・/pia_weekly の対象）',
       buttons: [
@@ -184,15 +186,15 @@ export function resetView(step) {
       ]
     },
     total: {
-      body: '## ⚠️ 累計データのリセット\n本当に **累計データ** を削除しますか？\n-# 週次・月間・年間の集計には影響しません。元には戻せません。',
+      body: '## 累計データのリセット\n本当に **累計データ** を削除しますか？\n-# 週次・月間・年間の集計には影響しません。元には戻せません。',
       buttons: [button('do_reset_total', '削除する', ButtonStyle.Danger), button('back_to_settings', 'キャンセル')]
     },
     weekly: {
-      body: '## ⚠️ 今週のデータのリセット\n本当に **直近8日間の記録** を削除しますか？\n-# 累計データには影響しません。元には戻せません。',
+      body: '## 今週のデータのリセット\n本当に **直近8日間の記録** を削除しますか？\n-# 累計データには影響しません。元には戻せません。',
       buttons: [button('do_reset_weekly', '削除する', ButtonStyle.Danger), button('back_to_settings', 'キャンセル')]
     },
     settings: {
-      body: '## ⚠️ 設定のリセット\n本当に **すべての設定** を初期状態に戻しますか？\n-# 記録データは消えません。',
+      body: '## 設定のリセット\n本当に **すべての設定** を初期状態に戻しますか？\n-# 記録データは消えません。',
       buttons: [button('do_reset_settings', 'リセットする', ButtonStyle.Danger), button('back_to_settings', 'キャンセル')]
     }
   };
@@ -324,9 +326,8 @@ export function excludedModal(settings) {
 // ------------------------
 
 /** 'rank' 行の整形。上位 3 位はメダル */
-export function rankLine({ rank, name, count }, emoji) {
-  const mark = MEDALS[rank - 1] ?? `\`${String(rank).padStart(2, ' ')}.\``;
-  return `${mark} ${name} さん　${emoji} × **${count}**`;
+export function rankLine({ rank, name, count }) {
+  return `${rank}位　${name} さん　${count}回`;
 }
 
 /**
@@ -368,7 +369,7 @@ export function rankingMessages({ title, subtitle, sections, color = COLORS.bran
     const pageNo = pages.length > 1 ? `（${index + 1}/${pages.length}）` : '';
     let header;
     if (index === 0) {
-      header = `## 🏆 ${title}`;
+      header = `## ${title}`;
       if (subtitle) header += `\n-# ${subtitle}`;
       if (pageNo) header += `\n-# ${pageNo}`;
     } else {
@@ -387,9 +388,10 @@ export function rankingMessages({ title, subtitle, sections, color = COLORS.bran
 export function weeklyIntroView(period) {
   return [
     container(COLORS.brand).addTextDisplayComponents(text(
-      '## 📣 今週のピアボーナス\n' +
-      'こんにちは！今週も皆さんお疲れ様でした。\n' +
-      '今週の結果をスレッドに投稿しました。ご覧ください！\n' +
+      'こんにちは！\n' +
+      '今週も皆さんお疲れ様でした\n' +
+      '今週のピアボーナスの結果をスレッドに投稿しました！\n' +
+      'ご覧ください！\n' +
       `-# 集計期間: ${formatPeriod(period)}`
     ))
   ];
@@ -402,26 +404,33 @@ export function weeklyIntroView(period) {
 /**
  * @param {object} p
  * @param {string} p.name
- * @param {string} p.emoji
  * @param {Array<{label: string, sent: number, received: number}>} p.periods
- * @param {Array<{name: string, count: number}>} p.sentTo
- * @param {Array<{name: string, count: number}>} p.receivedFrom
+ * @param {Array<{name: string, count: number}>} p.sentTo        回数の多い順
+ * @param {Array<{name: string, count: number}>} p.receivedFrom  回数の多い順
  */
-export function meView({ name, emoji, periods, sentTo, receivedFrom }) {
+export function meView({ name, periods, sentTo, receivedFrom }) {
   const partners = list => (list.length > 0
-    ? list.map((row, i) => `${MEDALS[i] ?? `${i + 1}.`} ${row.name} さん　${emoji} × **${row.count}**`).join('\n')
-    : '-# まだありません');
+    ? withRanks(list, 'count').map(({ rank, row }) => rankLine({ rank, name: row.name, count: row.count })).join('\n')
+    : '-# まだいません');
 
   const card = container(COLORS.brand)
-    .addTextDisplayComponents(text(`## 📊 ${name} さんの記録`))
+    .addTextDisplayComponents(text(`## ${name} さんの記録`))
     .addSeparatorComponents(separator())
     .addTextDisplayComponents(text(
-      periods.map(p => `**${p.label}**　📤 送った ${p.sent} 回 ／ 📥 もらった ${p.received} 回`).join('\n')
+      periods.map(p => `**${p.label}**　送った ${p.sent}回、もらった ${p.received}回`).join('\n')
     ))
     .addSeparatorComponents(separator())
-    .addTextDisplayComponents(text(`### 📤 よく送った相手\n${partners(sentTo)}`))
-    .addTextDisplayComponents(text(`### 📥 よくもらった相手\n${partners(receivedFrom)}`));
+    .addTextDisplayComponents(text(`### よく送った相手\n${partners(sentTo)}`))
+    .addTextDisplayComponents(text(`### よくもらった相手\n${partners(receivedFrom)}`));
   return [card];
+}
+
+/** 回数の多い順に並んだ配列に順位を付ける（同じ回数は同じ順位） */
+function withRanks(list, key) {
+  return list.map(row => ({
+    rank: list.findIndex(other => other[key] === row[key]) + 1,
+    row
+  }));
 }
 
 // ------------------------
@@ -431,28 +440,25 @@ export function meView({ name, emoji, periods, sentTo, receivedFrom }) {
 export function helpView() {
   return [
     container(COLORS.brand)
-      .addTextDisplayComponents(text('## 📘 Pia Bot の使い方'))
+      .addTextDisplayComponents(text('## Pia Bot の使い方'))
       .addSeparatorComponents(separator())
       .addTextDisplayComponents(text(
-        '### 🎁 記録のしかた\n' +
-        '- 設定された絵文字を入れて相手をメンションすると、送った人と受け取った人の回数が記録されます\n' +
-        '- ロールや @everyone へのメンションは、その全員に記録されます（設定で対象外にできます）\n' +
-        '- 同じ相手への1日の回数の上限や、記録しないチャンネルが設定されていることがあります'
+        '### 記録のしかた\n' +
+        '設定された絵文字を入れて相手をメンションすると、送った人ともらった人の回数が記録されます。\n' +
+        'ロールや @everyone へのメンションは、その全員に記録されます（サーバーの設定によっては対象外です）。'
       ))
       .addTextDisplayComponents(text(
-        '### 📊 ランキング・記録を見る\n' +
-        '- `/pia_total`：累計ランキング\n' +
-        '- `/pia_weekly`：直近7日間（今日を含む）のランキング\n' +
-        '- `/pia_monthly`：月間ランキング（今月／先月）\n' +
-        '- `/pia_yearly`：年間ランキング（今年／去年）\n' +
-        '- `/pia_me`：自分の記録とよくやり取りする相手\n' +
-        '- `/pia_settings`：現在の設定'
+        '### コマンド\n' +
+        '`/pia_total`　累計ランキング\n' +
+        '`/pia_weekly`　直近7日間のランキング\n' +
+        '`/pia_monthly`　月間ランキング（今月・先月）\n' +
+        '`/pia_yearly`　年間ランキング（今年・去年）\n' +
+        '`/pia_me`　自分の記録\n' +
+        '`/pia_settings`　現在の設定\n' +
+        '`/pia_config`　設定の変更（管理者のみ）'
       ))
       .addTextDisplayComponents(text(
-        '### ⚙️ 設定（管理者のみ）\n' +
-        '- `/pia_config` で設定パネルを開き、各項目の［変更］から設定します\n' +
-        '- 設定した曜日・時刻（日本時間）に、前日までの7日間の集計がスレッドに投稿されます\n' +
-        '- その時刻に Bot が止まっていても、同じ日のうちに再開すれば投稿されます'
+        '-# 毎週、設定された曜日・時刻（日本時間）に、前日までの7日間の集計がスレッドに投稿されます。'
       ))
   ];
 }
