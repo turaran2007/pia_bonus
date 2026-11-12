@@ -1,30 +1,56 @@
-import { Client, GatewayIntentBits, Events, PermissionFlagsBits, ActivityType } from 'discord.js';
-import { REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ComponentType } from 'discord.js';
+import http from 'node:http';
+import {
+  ActionRowBuilder,
+  ActivityType,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelSelectMenuBuilder,
+  ChannelType,
+  Client,
+  Events,
+  GatewayIntentBits,
+  MessageFlags,
+  ModalBuilder,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ThreadAutoArchiveDuration
+} from 'discord.js';
 import dotenv from 'dotenv';
 import cron from 'node-cron';
-import moment from 'moment-timezone';
-import 'moment/locale/ja.js';
+import { createDb } from './src/db.js';
+import { rankingLines, splitMessage } from './src/format.js';
 import {
-  addSent,
-  addReceived,
-  addDailySent,
-  addDailyReceived,
-  getStatsByGuild,
-  getWeeklyStats,
-  resetStats,
-  setEmoji,
-  setChannel,
-  setTime,
-  setDay,
-  setLastSent,
-  getSettings,
-  getLastSent,
-  saveDisplayName,
-  saveGuildId
-} from './db.js';
-import { getAllGuildConfigs } from './db.js';
+  DAYS,
+  TIMEZONE,
+  dayName,
+  formatPeriod,
+  nextSendTime,
+  normalizeDay,
+  nowJst,
+  parseTime,
+  recentPeriod,
+  reportPeriod,
+  toDateString
+} from './src/time.js';
 
 dotenv.config();
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const HEALTH_PORT = Number(process.env.HEALTH_PORT ?? 8080);
+const DEFAULT_EMOJI = '🔸';
+// ランキング投稿でメンションによる通知を飛ばさない
+const NO_PINGS = { parse: [] };
+
+if (!BOT_TOKEN) {
+  console.error('❌ 環境変数 BOT_TOKEN が設定されていません');
+  process.exit(1);
+}
+
+// DATABASE_URL が無ければ PGHOST / PGUSER / PGPASSWORD / PGDATABASE を使う（pg の標準動作）
+const db = createDb(process.env.DATABASE_URL);
 
 const client = new Client({
   intents: [
@@ -35,674 +61,572 @@ const client = new Client({
   ]
 });
 
-client.once('ready', async () => {
-  console.log(`Bot is ready! Logged in as ${client.user.tag}`);
+// ------------------------
+// 設定のキャッシュ（メッセージごとに DB を読まないため）
+// ------------------------
 
-  client.user.setPresence({
+const settingsCache = new Map();
+
+async function getSettings(guildId) {
+  if (!settingsCache.has(guildId)) {
+    settingsCache.set(guildId, await db.getSettings(guildId));
+  }
+  return settingsCache.get(guildId);
+}
+
+async function updateSettings(guildId, values) {
+  await db.updateSettings(guildId, values);
+  settingsCache.delete(guildId);
+}
+
+async function resetSettings(guildId) {
+  await db.resetSettings(guildId);
+  settingsCache.delete(guildId);
+}
+
+// ------------------------
+// スラッシュコマンド
+// ------------------------
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('pia_config')
+    .setDescription('Pia Botの設定メニューを表示します')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('pia_total').setDescription('累計の送受信数ランキングを表示します'),
+  new SlashCommandBuilder().setName('pia_weekly').setDescription('直近7日間の送受信数ランキングを表示します'),
+  new SlashCommandBuilder().setName('pia_help').setDescription('Pia Botの使い方を表示します'),
+  new SlashCommandBuilder().setName('pia_settings').setDescription('現在のBot設定を確認します')
+].map(command => command.toJSON());
+
+function updatePresence() {
+  client.user?.setPresence({
     activities: [{ name: `${client.guilds.cache.size}つのサーバーで導入中`, type: ActivityType.Playing }],
     status: 'online'
   });
+}
 
-  // Presence update every 5 minutes
-  cron.schedule('*/5 * * * *', () => {
-    client.user.setPresence({
-      activities: [{ name: `${client.guilds.cache.size}つのサーバーで導入中`, type: ActivityType.Playing }],
-      status: 'online'
-    });
-  }, {
-    timezone: 'Asia/Tokyo'
-  });
+/** ロールや @everyone のメンションを数えるため、メンバー一覧を読み込んでおく */
+async function fetchMembers(guild) {
+  try {
+    await guild.members.fetch();
+    console.log(`✅ ${guild.name} のメンバーを取得しました`);
+  } catch (err) {
+    console.error(`❌ ${guild.name} のメンバー取得に失敗:`, err);
+  }
+}
 
-  for (const [guildId, guild] of client.guilds.cache) {
-    await saveGuildId(guildId);
-    try {
-      await guild.members.fetch();
-      console.log(`✅ ${guild.name} のメンバーをフェッチしました`);
-    } catch (err) {
-      console.error(`❌ ${guild.name} のメンバー取得に失敗:`, err);
-    }
+client.once(Events.ClientReady, async readyClient => {
+  console.log(`✅ ${readyClient.user.tag} としてログインしました`);
+  updatePresence();
+
+  try {
+    await readyClient.application.commands.set(commands);
+    console.log('✅ スラッシュコマンドを登録しました');
+  } catch (err) {
+    console.error('❌ スラッシュコマンドの登録に失敗:', err);
   }
 
-  // グローバルコマンド登録
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('pia_config')
-      .setDescription('Pia Botの設定メニューを表示します'),
-
-    new SlashCommandBuilder()
-      .setName('pia_total')
-      .setDescription('累計の送受信数ランキングを表示します'),
-
-    // new SlashCommandBuilder()
-    //   .setName('pia_weekly')
-    //   .setDescription('今週の送受信数ランキングを表示します'),
-
-    new SlashCommandBuilder()
-      .setName('pia_help')
-      .setDescription('Pia Botの使い方を表示します'),
-
-    new SlashCommandBuilder()
-      .setName('pia_settings')
-      .setDescription('現在のBot設定を確認します')
-  ].map(cmd => cmd.toJSON());
-
-  // Ensure CLIENT_ID is defined for global command registration
-  const CLIENT_ID = process.env.CLIENT_ID;
-  const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
-  try {
-    await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
-      { body: commands }
-    );
-    console.log('✅ pia_config コマンドをグローバル登録しました');
-  } catch (error) {
-    console.error('❌ pia_config グローバル登録エラー:', error);
+  for (const guild of readyClient.guilds.cache.values()) {
+    await fetchMembers(guild);
   }
 });
 
-client.on('messageCreate', async message => {
-  if (message.author.bot || !message.guild) return;
+client.on(Events.GuildCreate, async guild => {
+  updatePresence();
+  await fetchMembers(guild);
+});
 
-  const mentions = new Set();
-  const senderId = message.author.id;
+client.on(Events.GuildDelete, guild => {
+  updatePresence();
+  settingsCache.delete(guild.id);
+});
 
-  message.mentions.users.forEach(user => {
-    if (!user.bot && user.id !== senderId) mentions.add(user.id);
-  });
+// ------------------------
+// 絵文字付きメンションの記録
+// ------------------------
 
-  message.mentions.roles.forEach(role => {
-    role.members.forEach(member => {
-      if (!member.user.bot && member.id !== senderId) mentions.add(member.id);
-    });
-  });
+client.on(Events.MessageCreate, async message => {
+  if (message.author.bot || !message.inGuild()) return;
 
-  if (message.mentions.everyone) {
-    message.guild.members.cache.forEach(member => {
-      if (!member.user.bot && member.id !== senderId) mentions.add(member.id);
-    });
-  }
-
-  mentions.delete(client.user.id);
-  if (mentions.size === 0) return;
-
-  const guildId = message.guild.id;
-  const today = new Date().toISOString().slice(0, 10);
-
-  getSettings(guildId, (settings) => {
+  try {
+    const settings = await getSettings(message.guildId);
     const emoji = settings?.emoji;
     if (!emoji || !message.content.includes(emoji)) return;
 
-    addSent(guildId, senderId);
-    addDailySent(guildId, senderId, today);
+    const senderId = message.author.id;
+    const receivers = new Set();
+    const addMember = member => {
+      if (!member.user.bot && member.id !== senderId) receivers.add(member.id);
+    };
 
-    mentions.forEach(userId => {
-      addReceived(guildId, userId);
-      addDailyReceived(guildId, userId, today);
+    message.mentions.users.forEach(user => {
+      if (!user.bot && user.id !== senderId) receivers.add(user.id);
     });
+    message.mentions.roles.forEach(role => role.members.forEach(addMember));
+    if (message.mentions.everyone) message.guild.members.cache.forEach(addMember);
+    receivers.delete(client.user.id);
+    if (receivers.size === 0) return;
 
-    const reply = mentions.size === 1
+    await db.recordAward(message.guildId, senderId, [...receivers], toDateString(nowJst()));
+
+    const reply = receivers.size === 1
       ? `<@${senderId}>さん、記録しました！`
-      : `<@${senderId}>さん、${mentions.size}人分を記録しました！`;
-
-    message.reply(reply);
-  });
+      : `<@${senderId}>さん、${receivers.size}人分を記録しました！`;
+    await message.reply(reply).catch(err => console.error('❌ 記録の返信に失敗:', err));
+  } catch (err) {
+    console.error('❌ メッセージの記録に失敗:', err);
+  }
 });
 
-client.on(Events.InteractionCreate, async interaction => {
-  if (interaction.commandName === 'pia_config') {
-    // 管理者権限チェック
-    if (!interaction.memberPermissions || !interaction.memberPermissions.has('Administrator')) {
-      return await interaction.reply({
-        content: '❌ このコマンドはサーバーの管理者のみ使用できます。',
-        ephemeral: true,
-      });
-    }
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('set_channel').setLabel('チャンネル設定').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('set_emoji').setLabel('絵文字設定').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('set_day').setLabel('曜日設定').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('set_time').setLabel('時刻設定').setStyle(ButtonStyle.Secondary)
-    );
+// ------------------------
+// ランキングの表示
+// ------------------------
 
-    const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('preview').setLabel('プレビュー').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('reset_stats').setLabel('記録リセット').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('reset_settings').setLabel('設定リセット').setStyle(ButtonStyle.Secondary)
-    );
-
-    await interaction.reply({
-      content: '**📋 Pia Bot 設定メニュー**\n以下のボタンから設定を行ってください。',
-      components: [row, row2],
-      ephemeral: true
-    });
-    return;
+/** ユーザー ID から表示名を引く。取れなければメンション表記にする */
+async function resolveNames(guild, userIds) {
+  const missing = userIds.filter(id => !guild.members.cache.has(id));
+  if (missing.length > 0) {
+    await guild.members.fetch({ user: missing }).catch(() => null);
   }
+  return id => guild.members.cache.get(id)?.displayName ?? `<@${id}>`;
+}
 
-  // ボタン/セレクト/モーダル処理
-  if (interaction.isButton()) {
-    const guildId = interaction.guildId;
+async function buildRanking(guild, rows, emoji, label, style) {
+  const nameOf = await resolveNames(guild, rows.map(row => row.userId));
+  const formatLine = style === 'list'
+    ? ({ name, count }) => `- ${name}（${emoji} ✕ ${count}）`
+    : ({ rank, name, count }) => `${rank}位: ${name} さん　（${emoji} ✕ ${count}）`;
+  const header = style === 'list' ? text => `**${text}:**` : text => `==${text}==`;
 
-    if (interaction.customId === 'set_channel') {
+  return [
+    header(`${label}のgiveAward`),
+    ...rankingLines(rows, 'sent', nameOf, formatLine),
+    '',
+    header(`${label}のreceiveAward`),
+    ...rankingLines(rows, 'received', nameOf, formatLine)
+  ].join('\n');
+}
+
+async function replyInChunks(interaction, text) {
+  const [first, ...rest] = splitMessage(text);
+  await interaction.editReply({ content: first, allowedMentions: NO_PINGS });
+  for (const chunk of rest) {
+    await interaction.followUp({ content: chunk, allowedMentions: NO_PINGS });
+  }
+}
+
+// ------------------------
+// 設定メニュー
+// ------------------------
+
+const CONFIG_COMPONENT_IDS = new Set([
+  'set_channel', 'set_emoji', 'set_day', 'set_time', 'preview',
+  'reset_stats', 'reset_settings', 'confirm_reset_settings_yes',
+  'confirm_reset_total', 'confirm_reset_total_yes',
+  'confirm_reset_weekly', 'confirm_reset_weekly_yes', 'cancel_reset',
+  'channel_select', 'day_select', 'emoji_modal', 'time_modal'
+]);
+
+function isAdmin(interaction) {
+  return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+}
+
+function ephemeral(content, extra = {}) {
+  return { content, flags: MessageFlags.Ephemeral, ...extra };
+}
+
+function settingsSummary(settings) {
+  const next = settings ? nextSendTime(nowJst(), settings.sendDay, settings.sendTime) : null;
+  return [
+    '📝 **現在の設定**',
+    `📌 絵文字: ${settings?.emoji || '未設定'}`,
+    `📢 チャンネル: ${settings?.channelId ? `<#${settings.channelId}>` : '未設定'}`,
+    `⏰ 送信時刻: ${settings?.sendTime || '未設定'}`,
+    `📅 曜日: ${normalizeDay(settings?.sendDay) || '未設定'}`,
+    `🗓 次回の集計投稿: ${next && settings?.channelId ? formatDateTime(next) : '（チャンネル・曜日・時刻をすべて設定すると投稿されます）'}`
+  ].join('\n');
+}
+
+function formatDateTime(m) {
+  return `${m.format('M月D日')}(${DAYS[m.day()][0]}) ${m.format('HH:mm')}`;
+}
+
+function confirmRow(yesId, yesLabel) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(yesId).setLabel(yesLabel).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('cancel_reset').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function handleConfigComponent(interaction) {
+  const { customId, guildId } = interaction;
+
+  switch (customId) {
+    case 'set_channel': {
       const row = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
+        new ChannelSelectMenuBuilder()
           .setCustomId('channel_select')
           .setPlaceholder('送信先チャンネルを選択してください')
-          .addOptions(
-            interaction.guild.channels.cache
-              .filter(ch => ch.isTextBased())
-              .map(ch => ({
-                label: ch.name,
-                value: ch.id
-              }))
-              .slice(0, 25)
-          )
+          .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       );
-      return interaction.reply({ content: '📢 チャンネルを選択してください', components: [row], ephemeral: true });
+      return interaction.reply(ephemeral('📢 チャンネルを選択してください', { components: [row] }));
     }
 
-    if (interaction.customId === 'set_emoji') {
+    case 'set_emoji': {
       const modal = new ModalBuilder()
         .setCustomId('emoji_modal')
         .setTitle('絵文字設定')
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('emoji_input')
-              .setLabel('記録対象の絵文字（例: <:coin:123456>）')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
+        .addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('emoji_input')
+            .setLabel('記録対象の絵文字（例: <:coin:123456>）')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+        ));
       return interaction.showModal(modal);
     }
 
-    if (interaction.customId === 'set_day') {
+    case 'set_day': {
       const row = new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId('day_select')
           .setPlaceholder('曜日を選択してください')
-          .addOptions(
-            [
-              { label: '月曜日', value: '月曜日' },
-              { label: '火曜日', value: '火曜日' },
-              { label: '水曜日', value: '水曜日' },
-              { label: '木曜日', value: '木曜日' },
-              { label: '金曜日', value: '金曜日' },
-              { label: '土曜日', value: '土曜日' },
-              { label: '日曜日', value: '日曜日' }
-            ]
-          )
+          .addOptions(['月曜日', '火曜日', '水曜日', '木曜日', '金曜日', '土曜日', '日曜日']
+            .map(day => ({ label: day, value: day })))
       );
-      return interaction.reply({ content: '📅 曜日を選択してください', components: [row], ephemeral: true });
+      return interaction.reply(ephemeral('📅 曜日を選択してください', { components: [row] }));
     }
 
-    if (interaction.customId === 'set_time') {
+    case 'set_time': {
       const modal = new ModalBuilder()
         .setCustomId('time_modal')
         .setTitle('送信時刻設定')
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId('time_input')
-              .setLabel('送信時刻 (HH:mm)')
-              .setStyle(TextInputStyle.Short)
-              .setRequired(true)
-          )
-        );
+        .addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('time_input')
+            .setLabel('送信時刻（例: 09:00、日本時間）')
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(5)
+            .setRequired(true)
+        ));
       return interaction.showModal(modal);
     }
 
-    if (interaction.customId === 'preview') {
-      getSettings(guildId, settings => {
-        if (!settings) {
-          return interaction.reply({ content: '⚠️ 設定がまだありません。', ephemeral: true });
-        }
-        const summary = [
-          `📝 **現在の設定**`,
-          `📌 絵文字: ${settings.emoji || '未設定'}`,
-          `📢 チャンネル: ${settings.channelId ? `<#${settings.channelId}>` : '未設定'}`,
-          `⏰ 送信時刻: ${settings.sendTime || '未設定'}`,
-          `📅 曜日: ${settings.sendDay || '未設定'}`
-        ].join('\n');
-        interaction.reply({ content: summary, ephemeral: true });
-      });
-    }
+    case 'preview':
+      return interaction.reply(ephemeral(settingsSummary(await getSettings(guildId))));
 
-    if (interaction.customId === 'reset_stats') {
+    case 'reset_stats': {
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('confirm_reset_total')
-          .setLabel('累計データをリセット')
-          .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-          .setCustomId('confirm_reset_weekly')
-          .setLabel('今週のデータをリセット')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId('cancel_reset')
-          .setLabel('キャンセル')
-          .setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId('confirm_reset_total').setLabel('累計データをリセット').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('confirm_reset_weekly').setLabel('今週のデータをリセット').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('cancel_reset').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
       );
-      return interaction.reply({
-        content: '⚠️ **どの統計データをリセットしますか？**',
-        components: [row],
-        ephemeral: true
-      });
+      return interaction.reply(ephemeral('⚠️ **どの統計データをリセットしますか？**', { components: [row] }));
     }
 
-    if (interaction.customId === 'reset_settings') {
-      setEmoji(interaction.guildId, null);
-      setChannel(interaction.guildId, null);
-      setTime(interaction.guildId, null);
-      setDay(interaction.guildId, null);
-      return interaction.reply({ content: '🧹 設定をリセットしました。', ephemeral: true });
-    }
+    case 'reset_settings':
+      return interaction.reply(ephemeral('⚠️ 本当に **設定** をリセットしますか？', {
+        components: [confirmRow('confirm_reset_settings_yes', 'はい、設定をリセットします')]
+      }));
 
-
-    if (interaction.customId === 'confirm_reset_total') {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('confirm_reset_total_yes')
-          .setLabel('はい、累計データを削除します')
-          .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-          .setCustomId('cancel_reset')
-          .setLabel('キャンセル')
-          .setStyle(ButtonStyle.Secondary)
-      );
+    case 'confirm_reset_total':
       return interaction.update({
-        content: '⚠️ 本当に **累計データ** をリセットしますか？',
-        components: [row]
+        content: '⚠️ 本当に **累計データ** をリセットしますか？\n（/pia_weekly と定期投稿の集計には影響しません）',
+        components: [confirmRow('confirm_reset_total_yes', 'はい、累計データを削除します')]
       });
-    }
 
-    if (interaction.customId === 'confirm_reset_total_yes') {
-      const now = new Date();
-      const today = now.toISOString().slice(0, 10);
-      resetStats(interaction.guildId, null, today, true);
+    case 'confirm_reset_total_yes':
+      await db.resetTotalStats(guildId);
       return interaction.update({ content: '✅ 累計データをリセットしました。', components: [] });
-    }
 
-    if (interaction.customId === 'confirm_reset_weekly') {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('confirm_reset_weekly_yes')
-          .setLabel('はい、今週のデータを削除します')
-          .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-          .setCustomId('cancel_reset')
-          .setLabel('キャンセル')
-          .setStyle(ButtonStyle.Secondary)
-      );
+    case 'confirm_reset_weekly':
       return interaction.update({
-        content: '⚠️ 本当に **今週のデータ** をリセットしますか？',
-        components: [row]
+        content: '⚠️ 本当に **今週のデータ** をリセットしますか？\n（直近8日間の記録を削除します。累計データには影響しません）',
+        components: [confirmRow('confirm_reset_weekly_yes', 'はい、今週のデータを削除します')]
       });
-    }
 
-    if (interaction.customId === 'confirm_reset_weekly_yes') {
-      const now = new Date();
-      const today = now.toISOString().slice(0, 10);
-      resetStats(interaction.guildId, null, today, false);
+    case 'confirm_reset_weekly_yes': {
+      // 定期投稿の集計期間（前日までの7日間）と /pia_weekly の期間（今日を含む7日間）の両方を消す
+      const from = toDateString(nowJst().startOf('day').subtract(7, 'days'));
+      await db.deleteDailyStatsSince(guildId, from);
       return interaction.update({ content: '✅ 今週のデータをリセットしました。', components: [] });
     }
 
-    if (interaction.customId === 'cancel_reset') {
+    case 'confirm_reset_settings_yes':
+      await resetSettings(guildId);
+      return interaction.update({ content: '🧹 設定をリセットしました。', components: [] });
+
+    case 'cancel_reset':
       return interaction.update({ content: '❎ リセットをキャンセルしました。', components: [] });
-    }
-  }
 
-  if (interaction.isStringSelectMenu()) {
-    const guildId = interaction.guildId;
-
-    if (interaction.customId === 'channel_select') {
-      const selected = interaction.values[0];
-      setChannel(guildId, selected);
-      return interaction.update({ content: `📢 チャンネルを <#${selected}> に設定しました`, components: [] });
+    case 'channel_select': {
+      const channelId = interaction.values[0];
+      await updateSettings(guildId, { channelId });
+      return interaction.update({ content: `📢 チャンネルを <#${channelId}> に設定しました`, components: [] });
     }
 
-    if (interaction.customId === 'day_select') {
-      const selected = interaction.values[0];
-      setDay(guildId, selected);
-      return interaction.update({ content: `📅 曜日を ${selected} に設定しました`, components: [] });
-    }
-  }
-
-  if (interaction.isModalSubmit()) {
-    const guildId = interaction.guildId;
-
-    if (interaction.customId === 'emoji_modal') {
-      const emoji = interaction.fields.getTextInputValue('emoji_input');
-      setEmoji(guildId, emoji);
-      return interaction.reply({ content: `📌 絵文字を ${emoji} に設定しました`, ephemeral: true });
+    case 'day_select': {
+      const sendDay = interaction.values[0];
+      await updateSettings(guildId, { sendDay });
+      return interaction.update({ content: `📅 曜日を ${sendDay} に設定しました`, components: [] });
     }
 
-    if (interaction.customId === 'time_modal') {
-      const time = interaction.fields.getTextInputValue('time_input');
-      setTime(guildId, time);
-      return interaction.reply({ content: `⏰ 送信時刻を ${time} に設定しました`, ephemeral: true });
-    }
-  }
-
-if (!interaction.isChatInputCommand()) return;
-const { commandName, options, guildId, user, member } = interaction;
-
-if (commandName === 'pia_help') {
-  interaction.reply({
-    content:
-      `📘 **Pia Bot ヘルプガイド**\n\n` +
-      `🛠 **設定方法**\n` +
-      `- \`/pia_config\` を使用して設定メニューを表示\n` +
-      `- ボタンから「チャンネル」「絵文字」「曜日」「時刻」「記録リセット」「設定リセット」の設定が可能です\n\n` +
-      `📊 **情報確認**\n` +
-      `- /pia_total：累計ランキング\n` +
-      `- /pia_weekly：今週のランキング\n` +
-      `- /pia_settings：現在の設定表示`,
-    ephemeral: true
-  });
-
-} else if (commandName === 'pia_total') {
-  getStatsByGuild(guildId, async rows => {
-    const filteredRows = rows.filter(r => r.sent > 0 || r.received > 0);
-    if (filteredRows.length === 0) {
-      return interaction.reply({ content: '統計データがありません。', ephemeral: true });
+    case 'emoji_modal': {
+      const emoji = interaction.fields.getTextInputValue('emoji_input').trim();
+      if (!emoji) return interaction.reply(ephemeral('❌ 絵文字を入力してください。'));
+      await updateSettings(guildId, { emoji });
+      return interaction.reply(ephemeral(`📌 絵文字を ${emoji} に設定しました`));
     }
 
-    getSettings(guildId, async settings => {
-      const emoji = settings?.emoji ?? '🔸';
-
-      const sentStats = filteredRows.filter(r => r.sent > 0).sort((a, b) => b.sent - a.sent);
-      const receivedStats = filteredRows.filter(r => r.received > 0).sort((a, b) => b.received - a.received);
-
-      const formatLines = async (list, type) => {
-        return Promise.all(list.map(async (stat, index) => {
-          const member = await interaction.guild.members.fetch(stat.userId).catch(() => null);
-          const name = member?.displayName ?? `<@${stat.userId}>`;
-          const count = type === 'sent' ? stat.sent : stat.received;
-          return `${index + 1}位: ${name} さん　（${emoji} ✕ ${count}）`;
-        }));
-      };
-
-      const linesSent = await formatLines(sentStats, 'sent');
-      const linesReceived = await formatLines(receivedStats, 'received');
-
-      const content = [
-        `==累計のgiveAward==`,
-        ...linesSent,
-        '',
-        `==累計のreceiveAward==`,
-        ...linesReceived
-      ].join('\n');
-
-      // --- splitMessageContent utility ---
-      function splitMessageContent(content, maxLength = 2000) {
-        const chunks = [];
-        let current = '';
-        for (const line of content.split('\n')) {
-          if ((current + line + '\n').length > maxLength) {
-            chunks.push(current);
-            current = '';
-          }
-          current += line + '\n';
-        }
-        if (current) chunks.push(current);
-        return chunks;
+    case 'time_modal': {
+      const input = interaction.fields.getTextInputValue('time_input');
+      const sendTime = parseTime(input);
+      if (!sendTime) {
+        return interaction.reply(ephemeral(`❌ 「${input}」は時刻として読み取れませんでした。09:00 のように入力してください。`));
       }
-
-      // --- split and send ---
-      const contents = splitMessageContent(content);
-      if (contents.length > 0) {
-        await interaction.reply({ content: contents[0], ephemeral: false });
-        for (let i = 1; i < contents.length; i++) {
-          await interaction.followUp({ content: contents[i], ephemeral: false });
-        }
-      }
-    });
-  });
-
-} else if (commandName === 'pia_settings') {
-  getSettings(guildId, (settings) => {
-    if (!settings) {
-      return interaction.reply({ content: '設定がまだ保存されていません。', ephemeral: true });
+      await updateSettings(guildId, { sendTime });
+      return interaction.reply(ephemeral(`⏰ 送信時刻を ${sendTime} に設定しました`));
     }
-
-    const summary = [
-      `📝 **現在の設定**`,
-      `📌 絵文字: ${settings.emoji || '未設定'}`,
-      `📢 チャンネル: ${settings.channelId ? `<#${settings.channelId}>` : '未設定'}`,
-      `⏰ 送信時刻: ${settings.sendTime || '未設定'}`,
-      `📅 曜日: ${settings.sendDay || '未設定'}`
-    ].join('\n');
-
-    interaction.reply({ content: summary, ephemeral: true });
-  });
+  }
 }
 
-// --- pia_weekly コマンド: 今週の送受信数ランキングを表示 ---
-else if (commandName === 'pia_weekly') {
-  const guildId = interaction.guildId;
-  // Utility to split a message by lines to fit Discord's 2000 char limit
-  function splitMessageContent(content, maxLength = 2000) {
-    const chunks = [];
-    let current = '';
-    for (const line of content.split('\n')) {
-      if ((current + line + '\n').length > maxLength) {
-        chunks.push(current);
-        current = '';
+// ------------------------
+// コマンド・ボタンなどの処理
+// ------------------------
+
+async function handleCommand(interaction) {
+  const { commandName, guildId, guild } = interaction;
+
+  switch (commandName) {
+    case 'pia_config': {
+      if (!isAdmin(interaction)) {
+        return interaction.reply(ephemeral('❌ このコマンドはサーバーの管理者のみ使用できます。'));
       }
-      current += line + '\n';
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('set_channel').setLabel('チャンネル設定').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('set_emoji').setLabel('絵文字設定').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('set_day').setLabel('曜日設定').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('set_time').setLabel('時刻設定').setStyle(ButtonStyle.Secondary)
+      );
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('preview').setLabel('プレビュー').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('reset_stats').setLabel('記録リセット').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('reset_settings').setLabel('設定リセット').setStyle(ButtonStyle.Secondary)
+      );
+      return interaction.reply(ephemeral('**📋 Pia Bot 設定メニュー**\n以下のボタンから設定を行ってください。', {
+        components: [row, row2]
+      }));
     }
-    if (current) chunks.push(current);
-    return chunks;
+
+    case 'pia_help':
+      return interaction.reply(ephemeral(
+        '📘 **Pia Bot ヘルプガイド**\n\n' +
+        '🎁 **使い方**\n' +
+        '- 設定した絵文字を入れて相手をメンションすると、送った人と受け取った人の回数が記録されます\n' +
+        '- ロールや @everyone へのメンションは、その全員に記録されます\n\n' +
+        '🛠 **設定方法（管理者のみ）**\n' +
+        '- `/pia_config` で設定メニューを表示\n' +
+        '- ボタンから「チャンネル」「絵文字」「曜日」「時刻」「記録リセット」「設定リセット」を設定できます\n' +
+        '- 設定した曜日・時刻（日本時間）に、前日までの7日間の集計がスレッドに投稿されます\n\n' +
+        '📊 **情報確認**\n' +
+        '- `/pia_total`：累計ランキング\n' +
+        '- `/pia_weekly`：直近7日間（今日を含む）のランキング\n' +
+        '- `/pia_settings`：現在の設定表示'
+      ));
+
+    case 'pia_settings':
+      return interaction.reply(ephemeral(settingsSummary(await getSettings(guildId))));
+
+    case 'pia_total': {
+      await interaction.deferReply();
+      const rows = await db.getTotalStats(guildId);
+      if (rows.length === 0) return interaction.editReply('統計データがありません。');
+      const emoji = (await getSettings(guildId))?.emoji ?? DEFAULT_EMOJI;
+      return replyInChunks(interaction, await buildRanking(guild, rows, emoji, '累計', 'rank'));
+    }
+
+    case 'pia_weekly': {
+      await interaction.deferReply();
+      const period = recentPeriod(nowJst());
+      const rows = await db.getStatsBetween(guildId, toDateString(period.start), toDateString(period.end));
+      if (rows.length === 0) {
+        return interaction.editReply(`直近7日間（${formatPeriod(period)}）のデータがありません。`);
+      }
+      const emoji = (await getSettings(guildId))?.emoji ?? DEFAULT_EMOJI;
+      const ranking = await buildRanking(guild, rows, emoji, '今週', 'rank');
+      return replyInChunks(interaction, `📊 集計期間: ${formatPeriod(period)}\n\n${ranking}`);
+    }
   }
-
-
-  // Get weekly stats for this guild
-  const now = moment().tz('Asia/Tokyo');
-  const endDate = now.toDate();
-  const startDate = now.clone().subtract(7, 'days').toDate();
-
-  getWeeklyStats(
-    guildId,
-    startDate.toISOString(),
-    endDate.toISOString()
-  ).then(async rows => {
-    if (!rows || rows.length === 0) {
-      return interaction.reply({ content: '今週のデータがありません。', ephemeral: true });
-    }
-
-    getSettings(guildId, async settings => {
-      const emoji = settings?.emoji ?? '🔸';
-      const sortedSent = rows.filter(r => r.sent > 0).sort((a, b) => b.sent - a.sent);
-      const sortedReceived = rows.filter(r => r.received > 0).sort((a, b) => b.received - a.received);
-
-      const linesSent = await Promise.all(sortedSent.map(async (row, idx) => {
-        const member = await interaction.guild.members.fetch(row.userId).catch(() => null);
-        const displayName = member?.displayName ?? `<@${row.userId}>`;
-        const count = row.sent;
-        return `${idx + 1}位: ${displayName} さん　（${emoji} ✕ ${count}）`;
-      }));
-
-      const linesReceived = await Promise.all(sortedReceived.map(async (row, idx) => {
-        const member = await interaction.guild.members.fetch(row.userId).catch(() => null);
-        const displayName = member?.displayName ?? `<@${row.userId}>`;
-        const count = row.received;
-        return `${idx + 1}位: ${displayName} さん　（${emoji} ✕ ${count}）`;
-      }));
-
-      const weeklyText = [
-        `==今週のgiveAward==`,
-        ...linesSent,
-        '',
-        `==今週のreceiveAward==`,
-        ...linesReceived
-      ].join('\n');
-
-      // Use splitMessageContent to split and send, using reply for first chunk and followUp for subsequent
-      const chunks = splitMessageContent(weeklyText);
-      if (chunks.length > 0) {
-        await interaction.reply({ content: chunks[0], ephemeral: false });
-        for (let i = 1; i < chunks.length; i++) {
-          await interaction.followUp({ content: chunks[i], ephemeral: false });
-        }
-      }
-    });
-  });
 }
-});
 
-cron.schedule('*/5 * * * *', () => {
-  client.guilds.cache.forEach(async guild => {
-    await guild.members.fetch();
-    guild.members.cache.forEach(member => {
-      if (!member.user.bot) {
-        saveDisplayName(guild.id, member.id, member.displayName); // 仮の関数
-      }
-    });
-  });
-}, {
-  timezone: 'Asia/Tokyo'
-});
-
-async function sendWeeklyStats(guildId, channelId) {
-  const botClient = client;
-  const channel = botClient?.channels?.cache?.get(channelId);
-  if (!channel) {
-    console.log(`⚠️ チャンネルが見つかりません: channelId=${channelId}`);
+async function handleInteraction(interaction) {
+  if (!interaction.inGuild()) {
+    if (interaction.isRepliable()) await interaction.reply(ephemeral('サーバー内で使用してください。'));
     return;
   }
-  try {
-    const now = moment().tz('Asia/Tokyo');
-    // 集計期間: 送信時間の7日前から送信日時まで
-    const endDate = now.toDate();
-    const startDate = now.clone().subtract(7, 'days').toDate();
-    // スレッド名: M月D日～M月D日の集計（未来日を含まないようにendDateは今日まで）
-    const formattedStart = moment(startDate).format('M月D日');
-    const formattedEnd = moment(endDate).format('M月D日');
-    const threadName = `${formattedStart}～${formattedEnd}の集計`;
 
-    const msg = await channel.send(
-      'こんにちは！\n今週も皆さんお疲れ様でした\n今週のピアボーナスの結果をスレッドに投稿しました！\nご覧ください！'
-    );
-    console.log('✅ メッセージ送信に成功');
+  if (interaction.isChatInputCommand()) return handleCommand(interaction);
 
-    const thread = await msg.startThread({
-      name: threadName,
-      autoArchiveDuration: 60,
-    });
-    console.log('✅ スレッド作成に成功');
-
-    // ギルド設定からemoji取得
-    const guildConfig = await new Promise(res => getSettings(guildId, res));
-    const emoji = guildConfig?.emoji ?? '';
-
-    // 集計期間を引数に渡して取得 (ISO8601文字列で渡す)
-    const rows = await getWeeklyStats(
-      guildId,
-      startDate.toISOString(),
-      endDate.toISOString()
-    );
-    if (!rows || rows.length === 0) {
-      const nextTime = now.clone().add(1, 'week').startOf('isoWeek').hour(0).minute(0);
-      const duration = moment.duration(nextTime.diff(now));
-      const formatted = `${duration.days()}日${duration.hours()}時間${duration.minutes()}分`;
-
-      await thread.send(`今週のデータはまだありません。\n次回の集計送信まで: **${formatted}**`);
-      return;
+  if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
+    if (!CONFIG_COMPONENT_IDS.has(interaction.customId)) return;
+    if (!isAdmin(interaction)) {
+      return interaction.reply(ephemeral('❌ この操作はサーバーの管理者のみ行えます。'));
     }
-
-    const sortedSent = rows.filter(r => r.sent > 0).sort((a, b) => b.sent - a.sent);
-    const sortedReceived = rows.filter(r => r.received > 0).sort((a, b) => b.received - a.received);
-
-    const linesSent = await Promise.all(sortedSent.map(async row => {
-      const member = await botClient.guilds.cache.get(guildId)?.members.fetch(row.userId).catch(() => null);
-      const displayName = member?.displayName ?? row.userId;
-      const count = row.sent;
-      return `- ${displayName}（${emoji} ✕ ${count}）`;
-    }));
-
-    const linesReceived = await Promise.all(sortedReceived.map(async row => {
-      const member = await botClient.guilds.cache.get(guildId)?.members.fetch(row.userId).catch(() => null);
-      const displayName = member?.displayName ?? row.userId;
-      const count = row.received;
-      return `- ${displayName}（${emoji} ✕ ${count}）`;
-    }));
-
-    const content = [
-      '**今週のgiveAward:**',
-      ...linesSent,
-      '',
-      '**今週のreceiveAward:**',
-      ...linesReceived
-    ].join('\n');
-
-    await thread.send(content);
-    console.log('✅ スレッドにデータ送信完了');
-  } catch (err) {
-    console.error('❌ 集計送信中にエラーが発生:', err);
+    return handleConfigComponent(interaction);
   }
 }
 
-// Updated checkAndSendStats function
-async function checkAndSendStats() {
-  const now     = moment().tz('Asia/Tokyo').locale('ja');
-  const today   = now.format('dddd');   // e.g., 木曜日
-  const nowTime = now.format('HH:mm');  // e.g., 11:10
+client.on(Events.InteractionCreate, async interaction => {
+  try {
+    await handleInteraction(interaction);
+  } catch (err) {
+    console.error(`❌ インタラクションの処理に失敗 (${interaction.commandName ?? interaction.customId}):`, err);
+    if (!interaction.isRepliable()) return;
+    const message = '⚠️ エラーが発生しました。時間をおいてもう一度お試しください。';
+    const send = interaction.deferred || interaction.replied
+      ? interaction.followUp(ephemeral(message))
+      : interaction.reply(ephemeral(message));
+    await send.catch(() => {});
+  }
+});
 
-  for (const [guildId, guild] of client.guilds.cache) {
-    const settings = await new Promise(res => getSettings(guildId, res));
-    if (!settings) {
-      console.log(`⚠️ [${guild.name}] 設定未登録`);
-      continue;
+// ------------------------
+// 週次の定期投稿
+// ------------------------
+
+async function sendWeeklyReport(guild, settings, now) {
+  const channel = await guild.channels.fetch(settings.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased() || !('threads' in channel)) {
+    console.log(`⚠️ [${guild.name}] 送信先チャンネルが見つかりません: ${settings.channelId}`);
+    return;
+  }
+
+  const period = reportPeriod(now);
+  const rows = await db.getStatsBetween(guild.id, toDateString(period.start), toDateString(period.end));
+
+  const msg = await channel.send(
+    'こんにちは！\n今週も皆さんお疲れ様でした\n今週のピアボーナスの結果をスレッドに投稿しました！\nご覧ください！'
+  );
+  const thread = await msg.startThread({
+    name: `${formatPeriod(period)}の集計`,
+    autoArchiveDuration: ThreadAutoArchiveDuration.OneHour
+  });
+
+  if (rows.length === 0) {
+    const next = nextSendTime(now, settings.sendDay, settings.sendTime);
+    await thread.send(
+      `この期間（${formatPeriod(period)}）の記録はありませんでした。` +
+      (next ? `\n次回の集計は **${formatDateTime(next)}** に投稿します。` : '')
+    );
+  } else {
+    const emoji = settings.emoji ?? DEFAULT_EMOJI;
+    const content = await buildRanking(guild, rows, emoji, '今週', 'list');
+    for (const chunk of splitMessage(content)) {
+      await thread.send({ content: chunk, allowedMentions: NO_PINGS });
     }
-    const { sendDay: scheduledDay, sendTime: scheduledTime, channelId } = settings;
+  }
+  console.log(`✅ [${guild.name}] 週次の集計を投稿しました`);
+}
 
-    console.log(`🔍 [${guild.name}] day=${scheduledDay}, time=${scheduledTime}`);
+let schedulerRunning = false;
 
-    if (today === scheduledDay && nowTime === scheduledTime) {
-      console.log(`📤 送信条件一致 → ${guild.name}`);
+async function runScheduler() {
+  if (schedulerRunning || !client.isReady()) return;
+  schedulerRunning = true;
+  try {
+    const now = nowJst();
+    const today = dayName(now);
+    const time = now.format('HH:mm');
+    const date = toDateString(now);
+
+    for (const settings of await db.getAllSettings()) {
+      if (!settings.channelId) continue;
+      if (normalizeDay(settings.sendDay) !== today || parseTime(settings.sendTime ?? '') !== time) continue;
+      const guild = client.guilds.cache.get(settings.guildId);
+      if (!guild) continue;
+      // 同じ日に二重投稿しない
+      if (!(await db.claimDailySend(settings.guildId, date))) continue;
+
       try {
-        // Prepare startDate and endDate as ISO strings
-        const now = moment().tz('Asia/Tokyo');
-        const startDate = now.clone().subtract(7, 'days').startOf('day').toDate().toISOString();
-        const endDate = now.toDate().toISOString();
-
-        // Use startDate and endDate in getWeeklyStats if needed here
-        // If sendWeeklyStats needs these, you would pass them; otherwise, if getWeeklyStats is called here, use them.
-        // If you want to use getWeeklyStats here instead of sendWeeklyStats, adapt accordingly.
-
-        // If you want to call getWeeklyStats here, example:
-        // const rows = await getWeeklyStats(guild.guild_id, startDate, endDate);
-
-        await sendWeeklyStats(guildId, channelId);
+        await sendWeeklyReport(guild, settings, now);
       } catch (err) {
-        console.error(`❌ 送信失敗 [${guild.name}]:`, err);
+        console.error(`❌ [${guild.name}] 週次の集計投稿に失敗:`, err);
       }
     }
+  } catch (err) {
+    console.error('❌ 定期投稿の確認に失敗:', err);
+  } finally {
+    schedulerRunning = false;
   }
 }
 
-// Replace the old cron with the new function
-cron.schedule('* * * * *', () => {
-  checkAndSendStats();
-}, { timezone: 'Asia/Tokyo' });
+// ------------------------
+// ヘルスチェック（Kubernetes の probe 用）
+// ------------------------
 
-client.login(process.env.BOT_TOKEN);
+function startHealthServer() {
+  const server = http.createServer(async (req, res) => {
+    const respond = (status, body) => {
+      res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(body);
+    };
 
-// --- Log and refresh all guild configs every 60 seconds ---
-async function logGuildConfigs() {
-  const configs = await getAllGuildConfigs();
-  console.log(`[${new Date().toISOString()}] 🔄 Loaded Guild Configs:`);
-  configs.forEach(config => {
-    console.log(`Guild ID: ${config.guildId}, Channel: ${config.channelId}, Time: ${config.time}, Day: ${config.day}`);
+    if (req.url === '/healthz') {
+      // 生存確認：Discord に接続できていれば OK
+      return client.isReady() ? respond(200, 'ok') : respond(503, 'discord not ready');
+    }
+    if (req.url === '/readyz') {
+      // 準備完了：Discord と DB の両方に接続できていれば OK
+      if (!client.isReady()) return respond(503, 'discord not ready');
+      try {
+        await db.ping();
+        return respond(200, 'ok');
+      } catch {
+        return respond(503, 'database not ready');
+      }
+    }
+    respond(404, 'not found');
   });
+  server.listen(HEALTH_PORT, () => console.log(`✅ ヘルスチェックを :${HEALTH_PORT} で待ち受けています`));
+  return server;
 }
 
-// Call once on startup
-logGuildConfigs();
+// ------------------------
+// 起動と終了
+// ------------------------
 
-// Schedule to run every minute
-setInterval(logGuildConfigs, 60 * 1000);  
-  // --- pia_weekly コマンド: 今週の送受信数ランキングを表示 ---
-  // Removed redundant block starting with `} else if (commandName === 'pia_weekly') {`
-  // The functionality for 'pia_weekly' is already implemented earlier in the code.
+async function initDatabase() {
+  const maxAttempts = 30;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await db.init();
+      console.log('✅ データベースの準備ができました');
+      return;
+    } catch (err) {
+      if (attempt >= maxAttempts) throw err;
+      console.log(`⏳ データベースに接続できません（${attempt}/${maxAttempts}）: ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+}
+
+const healthServer = startHealthServer();
+await initDatabase();
+const schedulerTask = cron.schedule('* * * * *', runScheduler, { timezone: TIMEZONE });
+await client.login(BOT_TOKEN);
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 ${signal} を受け取りました。終了します`);
+  schedulerTask.stop();
+  healthServer.close();
+  await client.destroy();
+  await db.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

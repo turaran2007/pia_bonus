@@ -1,0 +1,147 @@
+# Pia Bot（pia_bonus）
+
+Discord 用のピアボーナス Bot です。
+決めた絵文字を入れて相手をメンションすると、送った人（give）と受け取った人（receive）の回数を記録し、
+毎週決まった曜日・時刻にランキングをスレッドへ投稿します。
+
+## 使い方
+
+| コマンド | 内容 |
+|---|---|
+| `/pia_config` | 設定メニュー（管理者のみ）。チャンネル・絵文字・曜日・時刻・記録リセット・設定リセット |
+| `/pia_total` | 累計ランキング |
+| `/pia_weekly` | 直近7日間（今日を含む）のランキング |
+| `/pia_settings` | 現在の設定と次回の投稿日時 |
+| `/pia_help` | ヘルプ |
+
+- ロールや @everyone へのメンションは、そのメンバー全員に記録されます（Bot と自分自身は除く）。
+- 定期投稿は、設定した曜日・時刻（日本時間）に「前日までの7日間」を集計します。送信日当日の記録は次回に入るので、取りこぼしも重複もありません。
+- 日付はすべて日本時間で扱います。
+
+## 構成
+
+```
+index.js            Bot 本体（イベント処理、定期投稿、ヘルスチェック）
+src/db.js           PostgreSQL へのアクセス
+src/time.js         日付・時刻の処理（日本時間）
+src/format.js       メッセージの分割、ランキングの整形
+scripts/            旧データの移行、旧コマンドの削除
+k8s/                k3s 用のマニフェスト
+test/               テスト（node --test）
+```
+
+必要な環境変数：
+
+| 名前 | 内容 |
+|---|---|
+| `BOT_TOKEN` | Discord の Bot トークン（必須） |
+| `DATABASE_URL` または `PGHOST` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` | PostgreSQL の接続先 |
+| `HEALTH_PORT` | ヘルスチェックのポート（省略時 8080）。`/healthz` は Discord 接続、`/readyz` は Discord と DB の両方を確認 |
+
+Discord Developer Portal の Bot 設定で **SERVER MEMBERS INTENT** と **MESSAGE CONTENT INTENT** を有効にしてください。
+スラッシュコマンドは起動時に自動で登録されます（`CLIENT_ID` は不要になりました）。
+
+## ローカルで動かす
+
+```bash
+cp .env.example .env   # BOT_TOKEN と DATABASE_URL を入れる
+npm install
+npm start
+```
+
+テスト（DB のテストは `TEST_DATABASE_URL` を設定したときだけ実行されます。中のテーブルは消されるので専用の DB を使ってください）：
+
+```bash
+TEST_DATABASE_URL=postgres://postgres@localhost:5432/pia_test npm test
+```
+
+## k3s で動かす
+
+### 1. コンテナイメージ
+
+`main` に push すると GitHub Actions がテストを実行し、`ghcr.io/turaran2007/pia_bonus:latest`（amd64 / arm64）を作ります。
+
+リポジトリが非公開の場合、イメージも非公開になります。次のどちらかを行ってください。
+
+- GitHub の Packages 設定でイメージを Public にする
+- `read:packages` 権限のトークンで pull 用の Secret を作り、`k8s/bot.yaml` に `imagePullSecrets` を追加する
+
+```bash
+kubectl -n pia-bonus create secret docker-registry ghcr --docker-server=ghcr.io --docker-username=<GitHubユーザー名> --docker-password=<トークン>
+```
+
+GHCR を使わず、k3s のノード上でビルドして直接読み込むこともできます。この場合は `k8s/bot.yaml` の `image` を `pia_bonus:local`、`imagePullPolicy` を `IfNotPresent` に変更してください。
+
+```bash
+docker build -t pia_bonus:local .
+```
+
+```bash
+docker save pia_bonus:local | sudo k3s ctr images import -
+```
+
+### 2. Secret の作成
+
+```bash
+cp k8s/secret.example.yaml k8s/secret.yaml
+```
+
+`k8s/secret.yaml` に Bot トークンと PostgreSQL のパスワードを書きます（このファイルはコミットされません）。
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+```
+
+```bash
+kubectl apply -f k8s/secret.yaml
+```
+
+### 3. デプロイ
+
+```bash
+kubectl apply -k k8s/
+```
+
+```bash
+kubectl -n pia-bonus get pods
+```
+
+```bash
+kubectl -n pia-bonus logs deploy/pia-bonus -f
+```
+
+- PostgreSQL のデータは k3s 標準の `local-path` ストレージ（1Gi）に保存されます。
+- Bot は必ず 1 台で動かしてください（2 台以上だと記録や返信が重複します）。
+- 新しいイメージに更新するときは次を実行します。
+
+```bash
+kubectl -n pia-bonus rollout restart deploy/pia-bonus
+```
+
+### 4. 旧バージョン（SQLite）からのデータ移行
+
+旧バージョンの `emojiStats.db` がある場合は、Bot をデプロイしたあとに移行します。
+まず、手元から k3s 内の PostgreSQL に接続できるようにします（このコマンドは動かしたままにします）。
+
+```bash
+kubectl -n pia-bonus port-forward svc/postgres 5432:5432
+```
+
+別のターミナルで、リポジトリのディレクトリから実行します。
+
+```bash
+npm install && npm install --no-save better-sqlite3
+```
+
+```bash
+DATABASE_URL=postgres://pia:<POSTGRES_PASSWORD>@localhost:5432/pia_bonus npm run migrate:sqlite -- ./emojiStats.db
+```
+
+- 何度実行しても結果は同じです（同じデータは SQLite 側の値で上書きします）。
+- 旧バージョンは日別データを UTC の日付で保存していたため、移行前のデータは日本時間 0〜9 時の記録が前日扱いのままになります。
+
+旧バージョンの `deploy-commands.js` でサーバーにコマンドを登録していた場合は、動かなくなった `/pia_setemoji` などを削除できます。
+
+```bash
+BOT_TOKEN=<トークン> GUILD_ID=<サーバーID> npm run clear-guild-commands
+```

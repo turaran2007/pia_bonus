@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pia-bonus
+  labels:
+    app.kubernetes.io/name: pia-bonus
+spec:
+  # Discord Bot は 1 台だけ動かす（2 台以上だと記録や返信が重複する）
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pia-bonus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pia-bonus
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: bot
+          image: ghcr.io/turaran2007/pia_bonus:latest
+          imagePullPolicy: Always
+          ports:
+            - name: health
+              containerPort: 8080
+          env:
+            - name: BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pia-bonus
+                  key: BOT_TOKEN
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: pia
+            - name: PGDATABASE
+              value: pia_bonus
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pia-bonus
+                  key: POSTGRES_PASSWORD
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi

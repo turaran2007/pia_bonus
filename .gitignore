@@ -1,3 +1,5 @@
+node_modules/
 .env
-emojiStats.db
-node_modules
+*.db
+*.sqlite
+k8s/secret.yaml
