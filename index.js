@@ -119,8 +119,10 @@ async function resetSettings(guildId) {
 const commands = [
   new SlashCommandBuilder()
     .setName('pia_config')
-    // Bot の管理者がサーバーの管理者でなくても使えるよう、表示は制限しない（実行時に確認する）
-    .setDescription('Pia Botの設定メニューを表示します（管理者のみ）'),
+    .setDescription('Pia Botの設定メニューを表示します（管理者のみ）')
+    // Bot の管理者がサーバーの管理者でなくても使えるよう、表示は制限しない（実行時に確認する）。
+    // 以前の「管理者のみ表示」が Discord 側に残らないよう、null を明示して送る
+    .setDefaultMemberPermissions(null),
   new SlashCommandBuilder().setName('pia_total').setDescription('累計の送受信数ランキングを表示します'),
   new SlashCommandBuilder().setName('pia_weekly').setDescription('直近7日間の送受信数ランキングを表示します'),
   new SlashCommandBuilder()
@@ -318,6 +320,12 @@ const MODALS = {
   set_excluded: excludedModal
 };
 
+/** 権限が無いときのメッセージ。Bot の管理者に登録するときのため、本人のユーザー ID も表示する */
+function notAdminMessage(interaction) {
+  return 'この操作はサーバーの管理者のみ行えます。\n' +
+    `-# あなたのユーザー ID: ${interaction.user.id}（Bot の管理者に登録されていません）`;
+}
+
 function isAdmin(interaction) {
   const allowed = canManage({ userId: interaction.user.id, memberPermissions: interaction.memberPermissions }, botAdminIds);
   if (allowed && !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
@@ -447,7 +455,7 @@ async function handleCommand(interaction) {
   switch (commandName) {
     case 'pia_config': {
       if (!isAdmin(interaction)) {
-        return replyNotice(interaction, 'このコマンドはサーバーの管理者のみ使用できます。', 'error');
+        return replyNotice(interaction, notAdminMessage(interaction), 'error');
       }
       const components = settingsView(await getSettings(guildId), now, { editable: true });
       return interaction.reply({ components, flags: EPHEMERAL_V2, allowedMentions: NO_PINGS });
@@ -533,7 +541,7 @@ async function handleInteraction(interaction) {
   if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
     if (!ADMIN_COMPONENT_IDS.has(interaction.customId)) return;
     if (!isAdmin(interaction)) {
-      return replyNotice(interaction, 'この操作はサーバーの管理者のみ行えます。', 'error');
+      return replyNotice(interaction, notAdminMessage(interaction), 'error');
     }
     return handleAdminComponent(interaction);
   }
