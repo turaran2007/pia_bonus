@@ -172,7 +172,8 @@ export function settingsView(settings, now, { editable = false, status } = {}) {
     card.addSeparatorComponents(separator());
     card.addActionRowComponents(new ActionRowBuilder().addComponents(
       button('reset_stats', '記録のリセット', ButtonStyle.Danger),
-      button('reset_settings', '設定のリセット')
+      button('reset_settings', '設定のリセット'),
+      button('delete_messages', 'Bot のメッセージを削除', ButtonStyle.Danger)
     ));
   } else {
     card.addTextDisplayComponents(text('-# 設定の変更は管理者が /pia_config から行えます'));
@@ -211,6 +212,61 @@ export function resetView(step) {
     container(COLORS.danger)
       .addTextDisplayComponents(text(body))
       .addActionRowComponents(new ActionRowBuilder().addComponents(...buttons))
+  ];
+}
+
+// ------------------------
+// Bot のメッセージの削除
+// ------------------------
+
+const describeTargets = channelIds => (channelIds.length > 0
+  ? channelIds.map(id => `<#${id}>`).join(' ')
+  : '**サーバー全体**（Bot が見られるすべてのチャンネル）');
+
+/** 削除の確認画面 */
+export function deleteConfirmView(channelIds) {
+  return [
+    container(COLORS.danger)
+      .addTextDisplayComponents(text(
+        '## Bot のメッセージの削除\n' +
+        `対象: ${describeTargets(channelIds)}\n` +
+        'この Bot が送ったメッセージ（記録時の返信・ランキング・週次の集計投稿）を、履歴をさかのぼってすべて削除します。' +
+        'Bot が作ったスレッド（週次の集計）はスレッドごと削除します。\n' +
+        '-# 記録データは消えません。削除したメッセージは元に戻せません。チャンネルが多いと時間がかかります。'
+      ))
+      .addActionRowComponents(new ActionRowBuilder().addComponents(
+        button('do_delete_messages', '削除する', ButtonStyle.Danger),
+        button('back_to_settings', 'キャンセル')
+      ))
+  ];
+}
+
+/** 削除中の画面 */
+export function deleteProgressView({ checkedChannels = 0, totalChannels = 0, deletedMessages = 0, deletedThreads = 0 } = {}) {
+  return [
+    container(COLORS.warning).addTextDisplayComponents(text(
+      '## Bot のメッセージを削除しています…\n' +
+      `チャンネル ${checkedChannels} / ${totalChannels} を確認済み・メッセージ ${deletedMessages} 件、スレッド ${deletedThreads} 件を削除\n` +
+      '-# この画面を閉じても削除は続きます'
+    ))
+  ];
+}
+
+/** 削除結果の画面 */
+export function deleteResultView(result) {
+  const lines = [
+    `メッセージ ${result.deletedMessages} 件、スレッド ${result.deletedThreads} 件を削除しました（チャンネル ${result.checkedChannels} / ${result.totalChannels} を確認）。`
+  ];
+  if (result.failedMessages > 0) lines.push(`⚠️ ${result.failedMessages} 件のメッセージは削除できませんでした。`);
+  if (result.skippedChannels.length > 0) {
+    lines.push(`⚠️ 次のチャンネルは、Bot に「チャンネルを見る」「メッセージ履歴を読む」の権限が無いなどの理由で確認できませんでした：${result.skippedChannels.map(id => `<#${id}>`).join(' ')}`);
+  }
+  if (result.stoppedEarly) lines.push('⚠️ 時間がかかったため途中で止めました。もう一度実行すると続きを削除します。');
+  const ok = result.failedMessages === 0 && result.skippedChannels.length === 0 && !result.stoppedEarly;
+  return [
+    container(ok ? COLORS.success : COLORS.warning)
+      .addTextDisplayComponents(text(`## Bot のメッセージの削除\n${lines.join('\n')}`))
+      .addActionRowComponents(new ActionRowBuilder().addComponents(button('back_to_settings', '設定に戻る')))
   ];
 }
 
@@ -308,6 +364,25 @@ export function mentionsModal(settings) {
             { label: 'ロールへのメンション', value: 'roles', description: 'ロールのメンバー全員に記録', default: settings.countRoles },
             { label: '@everyone / @here', value: 'everyone', description: 'サーバーのメンバー全員に記録', default: settings.countEveryone }
           ))
+    );
+}
+
+export function deleteMessagesModal() {
+  return new ModalBuilder()
+    .setCustomId('delete_messages_modal')
+    .setTitle('Bot のメッセージを削除')
+    .addLabelComponents(
+      label('削除するチャンネル（最大25件）', '何も選ばなければサーバー全体。カテゴリーを選ぶと中のチャンネルすべてが対象')
+        .setChannelSelectMenuComponent(new ChannelSelectMenuBuilder()
+          .setCustomId('channels')
+          .setChannelTypes(
+            ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum,
+            ChannelType.GuildVoice, ChannelType.GuildCategory
+          )
+          .setPlaceholder('チャンネル・カテゴリーを選択（空ならサーバー全体）')
+          .setRequired(false)
+          .setMinValues(0)
+          .setMaxValues(25))
     );
 }
 

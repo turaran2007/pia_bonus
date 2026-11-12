@@ -16,6 +16,7 @@ import { collectReceivers, isExcludedChannel } from './src/awards.js';
 import { applicationOwnerIds, canManage, parseUserIds } from './src/permissions.js';
 import { describeDiscordError, diagnose } from './src/diagnostics.js';
 import { containsEmoji } from './src/emoji.js';
+import { deleteBotMessages } from './src/cleanup.js';
 import { VERSION } from './src/version.js';
 import { DEFAULT_SETTINGS, createDb } from './src/db.js';
 import { rankingLines } from './src/format.js';
@@ -37,6 +38,10 @@ import {
   MAX_DAILY_PAIR_LIMIT,
   channelModal,
   checkView,
+  deleteConfirmView,
+  deleteMessagesModal,
+  deleteProgressView,
+  deleteResultView,
   emojiModal,
   excludedModal,
   formatDateTime,
@@ -334,8 +339,57 @@ const ADMIN_COMPONENT_IDS = new Set([
   'set_channel', 'set_schedule', 'set_emoji', 'set_limit', 'set_mentions', 'set_excluded',
   'reset_stats', 'reset_settings', 'confirm_reset_total', 'confirm_reset_weekly',
   'do_reset_total', 'do_reset_weekly', 'do_reset_settings', 'back_to_settings',
-  'channel_modal', 'schedule_modal', 'emoji_modal', 'limit_modal', 'mentions_modal', 'excluded_modal'
+  'channel_modal', 'schedule_modal', 'emoji_modal', 'limit_modal', 'mentions_modal', 'excluded_modal',
+  'delete_messages', 'delete_messages_modal', 'do_delete_messages'
 ]);
+
+// Bot のメッセージの削除：確認画面で選ばれたチャンネル（キー: サーバーID:ユーザーID）と、実行中のサーバー
+const pendingDeletes = new Map();
+const runningDeletes = new Set();
+// 操作の応答（interaction）は 15 分で使えなくなるので、その少し前で止める
+const DELETE_TIME_LIMIT_MS = 13 * 60 * 1000;
+
+async function runDeleteMessages(interaction) {
+  const { guildId, guild } = interaction;
+  const key = `${guildId}:${interaction.user.id}`;
+  const channelIds = pendingDeletes.get(key);
+  if (!channelIds) {
+    return showSettingsPanel(interaction, { kind: 'error', message: '削除するチャンネルの選択が見つかりません。もう一度やり直してください。' });
+  }
+  if (runningDeletes.has(guildId)) {
+    return showSettingsPanel(interaction, { kind: 'error', message: 'このサーバーでは、すでに削除を実行中です。終わってからもう一度お試しください。' });
+  }
+  pendingDeletes.delete(key);
+  runningDeletes.add(guildId);
+
+  await interaction.update({ components: deleteProgressView(), flags: V2 });
+  let lastUpdate = 0;
+  try {
+    const result = await deleteBotMessages({
+      guild,
+      botId: client.user.id,
+      channelIds,
+      deadline: Date.now() + DELETE_TIME_LIMIT_MS,
+      onProgress: progress => {
+        if (Date.now() - lastUpdate < 3000) return;
+        lastUpdate = Date.now();
+        interaction.editReply({ components: deleteProgressView(progress), flags: V2 }).catch(() => {});
+      }
+    });
+    console.log(`🧹 [${guild.name}] Bot のメッセージを削除しました: メッセージ ${result.deletedMessages} 件・スレッド ${result.deletedThreads} 件` +
+      `（失敗 ${result.failedMessages} 件・確認できなかったチャンネル ${result.skippedChannels.length} 件${result.stoppedEarly ? '・途中で停止' : ''}）`);
+    if (result.lastError) {
+      const hint = describeDiscordError(result.lastError);
+      console.log(`ℹ️ [${guild.name}] 削除中の最後のエラー${hint ? `: ${hint}` : ''}`, hint ? '' : result.lastError);
+    }
+    await interaction.editReply({ components: deleteResultView(result), flags: V2, allowedMentions: NO_PINGS }).catch(() => {});
+  } catch (err) {
+    console.error(`❌ [${guild.name}] Bot のメッセージの削除に失敗:`, err);
+    await interaction.editReply({ components: noticeView('削除中にエラーが発生しました。時間をおいてもう一度お試しください。', 'error'), flags: V2 }).catch(() => {});
+  } finally {
+    runningDeletes.delete(guildId);
+  }
+}
 
 const MODALS = {
   set_channel: channelModal,
@@ -429,6 +483,12 @@ async function saveModal(interaction) {
 async function handleAdminComponent(interaction) {
   const { customId, guildId } = interaction;
 
+  if (customId === 'delete_messages_modal') {
+    const channelIds = [...(interaction.fields.getSelectedChannels('channels')?.keys() ?? [])];
+    pendingDeletes.set(`${guildId}:${interaction.user.id}`, channelIds);
+    return interaction.update({ components: deleteConfirmView(channelIds), flags: V2, allowedMentions: NO_PINGS });
+  }
+
   if (interaction.isModalSubmit()) {
     const status = await saveModal(interaction);
     return showSettingsPanel(interaction, status ?? undefined);
@@ -441,6 +501,11 @@ async function handleAdminComponent(interaction) {
   const showReset = step => interaction.update({ components: resetView(step), flags: V2 });
 
   switch (customId) {
+    case 'delete_messages':
+      return interaction.showModal(deleteMessagesModal());
+    case 'do_delete_messages':
+      return runDeleteMessages(interaction);
+
     case 'reset_stats':
       return showReset('choose');
     case 'confirm_reset_total':
