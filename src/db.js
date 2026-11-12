@@ -8,8 +8,20 @@ const SETTING_COLUMNS = {
   channelId: 'channel_id',
   sendDay: 'send_day',
   sendTime: 'send_time',
-  emoji: 'emoji'
+  emoji: 'emoji',
+  dailyPairLimit: 'daily_pair_limit',
+  countRoles: 'count_roles',
+  countEveryone: 'count_everyone',
+  excludedChannelIds: 'excluded_channel_ids'
 };
+
+// 設定が無いサーバーで使う値（以前のバージョンと同じ動き）
+export const DEFAULT_SETTINGS = Object.freeze({
+  dailyPairLimit: 0,
+  countRoles: true,
+  countEveryone: true,
+  excludedChannelIds: Object.freeze([])
+});
 
 export function createDb(connectionString) {
   const pool = new pg.Pool({ connectionString, max: 5 });
@@ -42,6 +54,22 @@ export function createDb(connectionString) {
         received INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, user_id, date)
       );
+
+      -- 誰が誰に何回送ったか（日別）。連投上限と /pia_me の「よく送った相手」に使う
+      CREATE TABLE IF NOT EXISTS pair_daily_stats (
+        guild_id    TEXT    NOT NULL,
+        sender_id   TEXT    NOT NULL,
+        receiver_id TEXT    NOT NULL,
+        date        DATE    NOT NULL,
+        count       INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (guild_id, sender_id, receiver_id, date)
+      );
+
+      ALTER TABLE guild_settings
+        ADD COLUMN IF NOT EXISTS daily_pair_limit     INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS count_roles          BOOLEAN NOT NULL DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS count_everyone       BOOLEAN NOT NULL DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS excluded_channel_ids TEXT[]  NOT NULL DEFAULT '{}';
     `);
   }
 
@@ -72,10 +100,30 @@ export function createDb(connectionString) {
   // 記録
   // ------------------------
 
-  /** 送った人 1 回、受け取った人それぞれ 1 回を累計と日別の両方に記録する */
-  async function recordAward(guildId, senderId, receiverIds, date) {
+  /**
+   * 送った人 1 回、受け取った人それぞれ 1 回を累計と日別の両方に記録する。
+   * dailyPairLimit が 1 以上なら、同じ相手へはその日その回数までしか数えない。
+   * @returns {Promise<{accepted: string[], limited: string[]}>}
+   */
+  async function recordAward(guildId, senderId, receiverIds, date, dailyPairLimit = 0) {
     receiverIds = [...new Set(receiverIds)].filter(id => id !== senderId);
-    await withTransaction(async client => {
+    return withTransaction(async client => {
+      // 相手ごとの回数を増やす。上限に達している相手は増えない（行が返らない）
+      const { rows } = await client.query(
+        `INSERT INTO pair_daily_stats (guild_id, sender_id, receiver_id, date, count)
+         SELECT $1, $2, unnest($3::text[]), $4, 1
+         ON CONFLICT (guild_id, sender_id, receiver_id, date)
+         DO UPDATE SET count = pair_daily_stats.count + 1
+         WHERE $5::int <= 0 OR pair_daily_stats.count < $5::int
+         RETURNING receiver_id`,
+        [guildId, senderId, receiverIds, date, dailyPairLimit]
+      );
+      const acceptedSet = new Set(rows.map(row => row.receiver_id));
+      const accepted = receiverIds.filter(id => acceptedSet.has(id));
+      const limited = receiverIds.filter(id => !acceptedSet.has(id));
+      if (accepted.length === 0) return { accepted, limited };
+      receiverIds = accepted;
+
       await client.query(
         `INSERT INTO stats (guild_id, user_id, sent) VALUES ($1, $2, 1)
          ON CONFLICT (guild_id, user_id) DO UPDATE SET sent = stats.sent + 1`,
@@ -100,6 +148,7 @@ export function createDb(connectionString) {
           [guildId, receiverIds, date]
         );
       }
+      return { accepted, limited };
     });
   }
 
@@ -127,9 +176,53 @@ export function createDb(connectionString) {
     return rows;
   }
 
-  /** 累計データを消す（日別データは残るので週次集計には影響しない） */
+  /** 1 人分の累計 */
+  async function getUserTotal(guildId, userId) {
+    const { rows } = await pool.query(
+      'SELECT sent, received FROM stats WHERE guild_id = $1 AND user_id = $2',
+      [guildId, userId]
+    );
+    return rows[0] ?? { sent: 0, received: 0 };
+  }
+
+  /** 1 人分の startDate〜endDate（両端を含む）の送受信数 */
+  async function getUserStatsBetween(guildId, userId, startDate, endDate) {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(sent), 0)::int AS sent, COALESCE(SUM(received), 0)::int AS received
+       FROM daily_stats
+       WHERE guild_id = $1 AND user_id = $2 AND date BETWEEN $3 AND $4`,
+      [guildId, userId, startDate, endDate]
+    );
+    return rows[0];
+  }
+
+  /**
+   * よく送った相手（direction='sent'）／よくもらった相手（direction='received'）の上位。
+   * @returns {Promise<Array<{userId: string, count: number}>>}
+   */
+  async function getTopPartners(guildId, userId, direction, limit = 3) {
+    const [me, other] = direction === 'sent' ? ['sender_id', 'receiver_id'] : ['receiver_id', 'sender_id'];
+    const { rows } = await pool.query(
+      `SELECT ${other} AS "userId", SUM(count)::int AS count
+       FROM pair_daily_stats
+       WHERE guild_id = $1 AND ${me} = $2
+       GROUP BY ${other}
+       ORDER BY count DESC, ${other}
+       LIMIT $3`,
+      [guildId, userId, limit]
+    );
+    return rows;
+  }
+
+  /**
+   * 累計データ（と、よく送った相手の集計・その日の連投カウント）を消す。
+   * 日別データは残るので、週次・月間・年間の集計には影響しない。
+   */
   async function resetTotalStats(guildId) {
-    await pool.query('DELETE FROM stats WHERE guild_id = $1', [guildId]);
+    await withTransaction(async client => {
+      await client.query('DELETE FROM stats WHERE guild_id = $1', [guildId]);
+      await client.query('DELETE FROM pair_daily_stats WHERE guild_id = $1', [guildId]);
+    });
   }
 
   /** fromDate（'YYYY-MM-DD'）以降の日別データを消す */
@@ -149,7 +242,11 @@ export function createDb(connectionString) {
       sendDay: row.send_day,
       sendTime: row.send_time,
       emoji: row.emoji,
-      lastSentDate: row.last_sent_date
+      lastSentDate: row.last_sent_date,
+      dailyPairLimit: row.daily_pair_limit,
+      countRoles: row.count_roles,
+      countEveryone: row.count_everyone,
+      excludedChannelIds: row.excluded_channel_ids
     };
   }
 
@@ -202,6 +299,9 @@ export function createDb(connectionString) {
     recordAward,
     getTotalStats,
     getStatsBetween,
+    getUserTotal,
+    getUserStatsBetween,
+    getTopPartners,
     resetTotalStats,
     deleteDailyStatsSince,
     getSettings,

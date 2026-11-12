@@ -10,7 +10,7 @@ let db;
 before(async () => {
   if (skip) return;
   db = createDb(url);
-  await db.pool.query('DROP TABLE IF EXISTS guild_settings, stats, daily_stats');
+  await db.pool.query('DROP TABLE IF EXISTS guild_settings, stats, daily_stats, pair_daily_stats');
   await db.init();
   await db.init(); // 2回呼んでも壊れない
 });
@@ -60,8 +60,16 @@ test('設定の部分更新とリセット', { skip }, async () => {
   await db.updateSettings('g1', { channelId: 'c1' });
   const s = await db.getSettings('g1');
   assert.deepEqual(s, {
-    guildId: 'g1', channelId: 'c1', sendDay: '月曜日', sendTime: '09:00', emoji: '👍', lastSentDate: null
+    guildId: 'g1', channelId: 'c1', sendDay: '月曜日', sendTime: '09:00', emoji: '👍', lastSentDate: null,
+    dailyPairLimit: 0, countRoles: true, countEveryone: true, excludedChannelIds: []
   });
+  await db.updateSettings('g1', { dailyPairLimit: 3, countRoles: false, countEveryone: false, excludedChannelIds: ['x', 'y'] });
+  const s2 = await db.getSettings('g1');
+  assert.equal(s2.dailyPairLimit, 3);
+  assert.equal(s2.countRoles, false);
+  assert.equal(s2.countEveryone, false);
+  assert.deepEqual(s2.excludedChannelIds, ['x', 'y']);
+  assert.equal(s2.emoji, '👍');
   assert.equal((await db.getAllSettings()).length, 1);
   await db.resetSettings('g1');
   assert.equal(await db.getSettings('g1'), null);
@@ -73,4 +81,41 @@ test('同じ日の二重投稿を防ぐ', { skip }, async () => {
   assert.equal(await db.claimDailySend('g3', '2026-11-16'), false);
   assert.equal(await db.claimDailySend('g3', '2026-11-23'), true);
   assert.equal((await db.getSettings('g3')).lastSentDate, '2026-11-23');
+});
+
+test('同じ相手への1日の上限', { skip }, async () => {
+  const day = '2026-11-20';
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b', 'c'], day, 2), { accepted: ['b', 'c'], limited: [] });
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b'], day, 2), { accepted: ['b'], limited: [] });
+  // b は上限、c はまだ
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b', 'c'], day, 2), { accepted: ['c'], limited: ['b'] });
+  // 全員上限なら何も記録しない（送った回数も増えない）
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b', 'c'], day, 2), { accepted: [], limited: ['b', 'c'] });
+  // 翌日はまた数える
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b'], '2026-11-21', 2), { accepted: ['b'], limited: [] });
+  // 0 は無制限
+  for (let i = 0; i < 5; i++) await db.recordAward('g4', 'd', ['b'], day, 0);
+
+  const total = Object.fromEntries((await db.getTotalStats('g4')).map(r => [r.userId, r]));
+  assert.deepEqual(total.a, { userId: 'a', sent: 4, received: 0 });
+  assert.deepEqual(total.b, { userId: 'b', sent: 0, received: 8 });
+  assert.deepEqual(total.c, { userId: 'c', sent: 0, received: 2 });
+});
+
+test('個人の集計とよくやり取りする相手', { skip }, async () => {
+  assert.deepEqual(await db.getUserTotal('g4', 'b'), { sent: 0, received: 8 });
+  assert.deepEqual(await db.getUserTotal('g4', 'nobody'), { sent: 0, received: 0 });
+  assert.deepEqual(await db.getUserStatsBetween('g4', 'a', '2026-11-20', '2026-11-20'), { sent: 3, received: 0 });
+  assert.deepEqual(await db.getUserStatsBetween('g4', 'a', '2026-01-01', '2026-01-31'), { sent: 0, received: 0 });
+  assert.deepEqual(await db.getTopPartners('g4', 'a', 'sent'), [{ userId: 'b', count: 3 }, { userId: 'c', count: 2 }]);
+  assert.deepEqual(await db.getTopPartners('g4', 'b', 'received'), [{ userId: 'd', count: 5 }, { userId: 'a', count: 3 }]);
+  assert.deepEqual(await db.getTopPartners('g4', 'b', 'received', 1), [{ userId: 'd', count: 5 }]);
+});
+
+test('累計リセットで相手別の集計と当日の上限カウントも消える', { skip }, async () => {
+  await db.resetTotalStats('g4');
+  assert.deepEqual(await db.getTopPartners('g4', 'a', 'sent'), []);
+  assert.deepEqual(await db.recordAward('g4', 'a', ['b'], '2026-11-20', 2), { accepted: ['b'], limited: [] });
+  // 日別データは残る
+  assert.deepEqual(await db.getUserStatsBetween('g4', 'a', '2026-11-20', '2026-11-20'), { sent: 4, received: 0 });
 });

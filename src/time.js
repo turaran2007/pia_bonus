@@ -86,3 +86,27 @@ export function nextSendTime(now, day, time) {
   while (!candidate.isAfter(base)) candidate.add(7, 'days');
   return candidate;
 }
+
+/** 今月（offset=-1 で先月）の期間（両端を含む） */
+export function monthPeriod(now, offset = 0) {
+  const start = now.clone().tz(TIMEZONE).startOf('month').add(offset, 'months');
+  const end = start.clone().endOf('month').startOf('day');
+  return { start, end };
+}
+
+/** 今年（offset=-1 で去年）の期間（両端を含む） */
+export function yearPeriod(now, offset = 0) {
+  const start = now.clone().tz(TIMEZONE).startOf('year').add(offset, 'years');
+  const end = start.clone().endOf('year').startOf('day');
+  return { start, end };
+}
+
+/**
+ * 今日が送信曜日で、送信時刻を過ぎているか。
+ * 送信時刻ちょうどに Bot が止まっていても、その日のうちに起動すれば送れるようにするためのもの。
+ */
+export function isDueToday(now, day, time) {
+  const sendTime = parseTime(time ?? '');
+  if (!sendTime || normalizeDay(day) !== dayName(now)) return false;
+  return now.clone().tz(TIMEZONE).format('HH:mm') >= sendTime;
+}

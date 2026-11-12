@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import moment from 'moment-timezone';
 import {
-  TIMEZONE, dayName, formatPeriod, nextSendTime, normalizeDay, parseTime,
-  recentPeriod, reportPeriod, toDateString
+  TIMEZONE, dayName, formatPeriod, isDueToday, monthPeriod, nextSendTime, normalizeDay, parseTime,
+  recentPeriod, reportPeriod, toDateString, yearPeriod
 } from '../src/time.js';
 
 const jst = s => moment.tz(s, TIMEZONE);
@@ -56,4 +56,25 @@ test('次回の投稿日時', () => {
   assert.equal(nextSendTime(now, '木曜日', '11:00').format('YYYY-MM-DD HH:mm'), '2026-11-12 11:00');
   assert.equal(nextSendTime(now, '月曜日', '9:00').format('YYYY-MM-DD HH:mm'), '2026-11-16 09:00');
   assert.equal(nextSendTime(now, null, '09:00'), null);
+});
+
+test('月間・年間の期間', () => {
+  const now = jst('2026-03-15 12:00');
+  const range = p => [toDateString(p.start), toDateString(p.end)];
+  assert.deepEqual(range(monthPeriod(now)), ['2026-03-01', '2026-03-31']);
+  assert.deepEqual(range(monthPeriod(now, -1)), ['2026-02-01', '2026-02-28']);
+  assert.deepEqual(range(monthPeriod(jst('2026-01-10 00:10'), -1)), ['2025-12-01', '2025-12-31']);
+  assert.deepEqual(range(yearPeriod(now)), ['2026-01-01', '2026-12-31']);
+  assert.deepEqual(range(yearPeriod(now, -1)), ['2025-01-01', '2025-12-31']);
+});
+
+test('送信時刻を過ぎていれば同じ日のうちは送信対象', () => {
+  // 2026-11-16 は月曜
+  assert.equal(isDueToday(jst('2026-11-16 08:59'), '月曜日', '09:00'), false);
+  assert.equal(isDueToday(jst('2026-11-16 09:00'), '月曜日', '09:00'), true);
+  assert.equal(isDueToday(jst('2026-11-16 23:59'), '月曜日', '9:00'), true);
+  assert.equal(isDueToday(jst('2026-11-17 09:30'), '月曜日', '09:00'), false);
+  assert.equal(isDueToday(jst('2026-11-16 10:00'), 'Monday', '09:00'), true);
+  assert.equal(isDueToday(jst('2026-11-16 10:00'), null, '09:00'), false);
+  assert.equal(isDueToday(jst('2026-11-16 10:00'), '月曜日', null), false);
 });
