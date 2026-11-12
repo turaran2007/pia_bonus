@@ -101,6 +101,13 @@ export function recordReplyView({ senderId, accepted, limited, limit }) {
 // 設定
 // ------------------------
 
+function describeEmoji(value) {
+  const emoji = parseEmojiSetting(value);
+  if (!emoji) return '未設定\n-# 設定するまで記録されません';
+  if (emoji.customId) return `${value}\n-# サーバー独自の絵文字です。この絵文字だけを記録します`;
+  return `${value}\n-# 名前 \`${emoji.label}\` で判定します（同じ名前の絵文字はどれでも記録）`;
+}
+
 function describeSettings(settings, now) {
   const day = normalizeDay(settings.sendDay);
   const next = nextSendTime(now, settings.sendDay, settings.sendTime);
@@ -123,9 +130,7 @@ function describeSettings(settings, now) {
   return {
     channel: settings.channelId ? `<#${settings.channelId}>` : '未設定',
     schedule,
-    emoji: settings.emoji
-      ? `${settings.emoji}\n-# 名前 \`${parseEmojiSetting(settings.emoji)?.label ?? settings.emoji}\` で判定します（同じ名前の絵文字はどれでも記録）`
-      : '未設定\n-# 設定するまで記録されません',
+    emoji: describeEmoji(settings.emoji),
     limit: settings.dailyPairLimit > 0 ? `${settings.dailyPairLimit}回まで` : '無制限',
     mentions,
     excluded
@@ -262,7 +267,7 @@ export function emojiModal(settings) {
     .setCustomId('emoji_modal')
     .setTitle('対象の絵文字')
     .addLabelComponents(
-      label('対象の絵文字', '絵文字そのもの（🪙）か名前（:coin:）を入力。同じ名前の絵文字ならどれでも記録されます')
+      label('対象の絵文字', '標準の絵文字は 🪙 か :coin:（名前で判定）。サーバー独自の絵文字は <:名前:ID> で、その絵文字だけ記録')
         .setTextInputComponent(new TextInputBuilder()
           .setCustomId('emoji')
           .setStyle(TextInputStyle.Short)

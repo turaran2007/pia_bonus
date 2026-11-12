@@ -45,7 +45,8 @@ export function diagnose({ settings, excluded, channelPermissions, isThread, rep
 
   // 記録の設定
   const emoji = parseEmojiSetting(settings.emoji);
-  if (emoji) ok(`対象の絵文字は ${settings.emoji} です（名前 \`${emoji.label}\` で判定します）`);
+  if (emoji?.customId) ok(`対象の絵文字は ${settings.emoji} です（サーバー独自の絵文字。この絵文字だけを記録します）`);
+  else if (emoji) ok(`対象の絵文字は ${settings.emoji} です（名前 \`${emoji.label}\` で判定します）`);
   else error('対象の絵文字が設定されていません。/pia_config から設定してください');
 
   if (excluded) error('このチャンネルは除外チャンネルに含まれているため、記録されません');
