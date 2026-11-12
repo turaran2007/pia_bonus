@@ -241,7 +241,16 @@ client.on(Events.MessageCreate, async message => {
       options: settings
     });
     if (receivers.length === 0) {
-      console.log(`ℹ️ ${where} 絵文字はありますが、記録できるメンション（自分と Bot 以外）が無いため記録しませんでした`);
+      // 原因を調べられるよう、Bot が受け取ったメンションの中身も出す
+      const detail = {
+        sender: senderId,
+        users: message.mentions.users.map(user => ({ id: user.id, bot: user.bot })),
+        roles: message.mentions.roles.map(role => ({ id: role.id, name: role.name, cachedMembers: role.members.size })),
+        everyone: message.mentions.everyone,
+        countRoles: settings.countRoles,
+        countEveryone: settings.countEveryone
+      };
+      console.log(`ℹ️ ${where} 絵文字はありますが、記録できるメンション（自分と Bot 以外）が無いため記録しませんでした`, JSON.stringify(detail));
       return;
     }
 
