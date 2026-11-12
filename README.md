@@ -110,6 +110,8 @@ docker build -t pia_bonus:local .
 docker save pia_bonus:local | sudo k3s ctr images import -
 ```
 
+Bot の「プレイ中」の表示と `/pia_help` に、動いているバージョン（例: `v2.1.0 (abc1234)`）が出ます。括弧内はイメージを作ったコミットの ID なので、どのコミットが反映されているか確認できます。
+
 ### 2. Secret の作成
 
 ```bash

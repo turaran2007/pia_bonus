@@ -466,7 +466,7 @@ export function checkView(results) {
 // /pia_help
 // ------------------------
 
-export function helpView() {
+export function helpView(version) {
   return [
     container(COLORS.brand)
       .addTextDisplayComponents(text('## Pia Bot の使い方'))
@@ -488,7 +488,8 @@ export function helpView() {
         '`/pia_config`　設定の変更（管理者のみ）'
       ))
       .addTextDisplayComponents(text(
-        '-# 毎週、設定された曜日・時刻（日本時間）に、前日までの7日間の集計がスレッドに投稿されます。'
+        '-# 毎週、設定された曜日・時刻（日本時間）に、前日までの7日間の集計がスレッドに投稿されます。' +
+        (version ? `\n-# バージョン ${version}` : '')
       ))
   ];
 }
