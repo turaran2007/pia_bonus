@@ -14,6 +14,7 @@ import dotenv from 'dotenv';
 import cron from 'node-cron';
 import { collectReceivers, isExcludedChannel } from './src/awards.js';
 import { applicationOwnerIds, canManage, parseUserIds } from './src/permissions.js';
+import { describeDiscordError, diagnose } from './src/diagnostics.js';
 import { DEFAULT_SETTINGS, createDb } from './src/db.js';
 import { rankingLines } from './src/format.js';
 import {
@@ -33,6 +34,7 @@ import {
 import {
   MAX_DAILY_PAIR_LIMIT,
   channelModal,
+  checkView,
   emojiModal,
   excludedModal,
   formatDateTime,
@@ -119,8 +121,10 @@ async function resetSettings(guildId) {
 const commands = [
   new SlashCommandBuilder()
     .setName('pia_config')
-    // Bot の管理者がサーバーの管理者でなくても使えるよう、表示は制限しない（実行時に確認する）
-    .setDescription('Pia Botの設定メニューを表示します（管理者のみ）'),
+    .setDescription('Pia Botの設定メニューを表示します（管理者のみ）')
+    // Bot の管理者がサーバーの管理者でなくても使えるよう、表示は制限しない（実行時に確認する）。
+    // 以前の「管理者のみ表示」が Discord 側に残らないよう、null を明示して送る
+    .setDefaultMemberPermissions(null),
   new SlashCommandBuilder().setName('pia_total').setDescription('累計の送受信数ランキングを表示します'),
   new SlashCommandBuilder().setName('pia_weekly').setDescription('直近7日間の送受信数ランキングを表示します'),
   new SlashCommandBuilder()
@@ -138,6 +142,7 @@ const commands = [
       .setDescription('どの年を表示するか（省略時は今年）')
       .addChoices({ name: '今年', value: 'this' }, { name: '去年', value: 'last' })),
   new SlashCommandBuilder().setName('pia_me').setDescription('自分の送受信数とよくやり取りする相手を表示します'),
+  new SlashCommandBuilder().setName('pia_check').setDescription('このチャンネルで記録できるかを確認します'),
   new SlashCommandBuilder().setName('pia_help').setDescription('Pia Botの使い方を表示します'),
   new SlashCommandBuilder().setName('pia_settings').setDescription('現在のBot設定を確認します')
 ].map(command => command.toJSON());
@@ -218,7 +223,12 @@ client.on(Events.MessageCreate, async message => {
     const settings = await getSettings(message.guildId);
     const emoji = settings.emoji;
     if (!emoji || !message.content.includes(emoji)) return;
-    if (isExcludedChannel(message.channel, settings.excludedChannelIds)) return;
+
+    const where = `[${message.guild.name}] #${message.channel.name ?? message.channelId}`;
+    if (isExcludedChannel(message.channel, settings.excludedChannelIds)) {
+      console.log(`ℹ️ ${where} 除外チャンネルのため記録しませんでした`);
+      return;
+    }
 
     const senderId = message.author.id;
     const receivers = collectReceivers({
@@ -230,7 +240,10 @@ client.on(Events.MessageCreate, async message => {
       allMembers: message.guild.members.cache.values(),
       options: settings
     });
-    if (receivers.length === 0) return;
+    if (receivers.length === 0) {
+      console.log(`ℹ️ ${where} 絵文字はありますが、記録できるメンション（自分と Bot 以外）が無いため記録しませんでした`);
+      return;
+    }
 
     const { accepted, limited } = await db.recordAward(
       message.guildId, senderId, receivers, toDateString(nowJst()), settings.dailyPairLimit
@@ -243,7 +256,10 @@ client.on(Events.MessageCreate, async message => {
       flags: V2,
       // 送った本人にだけ通知する（以前と同じ動き）
       allowedMentions: { users: [senderId], repliedUser: false }
-    }).catch(err => console.error('❌ 記録の返信に失敗:', err));
+    }).catch(err => {
+      const hint = describeDiscordError(err);
+      console.error(`❌ ${where} 記録はしましたが、返信に失敗しました${hint ? `: ${hint}` : ''}`, hint ? '' : err);
+    });
   } catch (err) {
     console.error('❌ メッセージの記録に失敗:', err);
   }
@@ -317,6 +333,12 @@ const MODALS = {
   set_mentions: mentionsModal,
   set_excluded: excludedModal
 };
+
+/** 権限が無いときのメッセージ。Bot の管理者に登録するときのため、本人のユーザー ID も表示する */
+function notAdminMessage(interaction) {
+  return 'この操作はサーバーの管理者のみ行えます。\n' +
+    `-# あなたのユーザー ID: ${interaction.user.id}（Bot の管理者に登録されていません）`;
+}
 
 function isAdmin(interaction) {
   const allowed = canManage({ userId: interaction.user.id, memberPermissions: interaction.memberPermissions }, botAdminIds);
@@ -447,7 +469,7 @@ async function handleCommand(interaction) {
   switch (commandName) {
     case 'pia_config': {
       if (!isAdmin(interaction)) {
-        return replyNotice(interaction, 'このコマンドはサーバーの管理者のみ使用できます。', 'error');
+        return replyNotice(interaction, notAdminMessage(interaction), 'error');
       }
       const components = settingsView(await getSettings(guildId), now, { editable: true });
       return interaction.reply({ components, flags: EPHEMERAL_V2, allowedMentions: NO_PINGS });
@@ -460,6 +482,31 @@ async function handleCommand(interaction) {
 
     case 'pia_help':
       return interaction.reply({ components: helpView(), flags: EPHEMERAL_V2 });
+
+    case 'pia_check': {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      const settings = await getSettings(guildId);
+      // Bot がこのチャンネルを見られなくても、appPermissions で権限は分かる
+      const channel = interaction.channel ?? await guild.channels.fetch(interaction.channelId).catch(() => null);
+
+      let reportChannel = null;
+      if (settings.channelId) {
+        const target = await guild.channels.fetch(settings.channelId).catch(() => null);
+        const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+        reportChannel = target && me
+          ? { found: true, permissions: target.permissionsFor(me) ?? { has: () => false } }
+          : { found: false };
+      }
+
+      const results = diagnose({
+        settings,
+        excluded: isExcludedChannel(channel ?? { id: interaction.channelId }, settings.excludedChannelIds),
+        channelPermissions: interaction.appPermissions,
+        isThread: channel?.isThread?.() ?? false,
+        reportChannel
+      });
+      return interaction.editReply({ components: checkView(results), flags: V2, allowedMentions: NO_PINGS });
+    }
 
     case 'pia_total':
       return replyRanking(interaction, { title: '累計ランキング', emptyMessage: 'まだ記録がありません。' });
@@ -533,7 +580,7 @@ async function handleInteraction(interaction) {
   if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
     if (!ADMIN_COMPONENT_IDS.has(interaction.customId)) return;
     if (!isAdmin(interaction)) {
-      return replyNotice(interaction, 'この操作はサーバーの管理者のみ行えます。', 'error');
+      return replyNotice(interaction, notAdminMessage(interaction), 'error');
     }
     return handleAdminComponent(interaction);
   }
@@ -607,7 +654,8 @@ async function runScheduler() {
       try {
         await sendWeeklyReport(guild, settings, now);
       } catch (err) {
-        console.error(`❌ [${guild.name}] 週次の集計投稿に失敗:`, err);
+        const hint = describeDiscordError(err);
+        console.error(`❌ [${guild.name}] 週次の集計投稿に失敗${hint ? `: ${hint}` : ''}`, hint ? '' : err);
       }
     }
   } catch (err) {
